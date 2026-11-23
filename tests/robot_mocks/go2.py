@@ -123,3 +123,28 @@ class FakeGo2SDK:
             module = ModuleType(name)
             module.__dict__.update(members)
             monkeypatch.setitem(sys.modules, name, module)
+
+
+class FakeStandingSupervisor:
+    """In-memory control lease and stand feedback source."""
+
+    def __init__(self, sdk):
+        self.sdk = sdk
+        self.standing = False
+        self.feedback = None
+
+    def acquire(self, interface):
+        self.sdk.events.append(("acquire", interface))
+        return self
+
+    def write(self, message, *, timeout):
+        assert not self.standing
+        self.sdk.events.append(("write", copy.deepcopy(message)))
+        return self.sdk.write_ok
+
+    def request_stand(self):
+        self.standing = True
+        self.sdk.events.append(("stand",))
+
+    def stand_feedback(self):
+        return self.feedback()

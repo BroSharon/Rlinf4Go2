@@ -29,8 +29,16 @@ The output contains four frames of SDK-ordered joint targets and torques. Select
 
 Install [Unitree SDK2 Python](https://github.com/unitreerobotics/unitree_sdk2_python/tree/814556d15970dd2ecf1c9984e845ca02ab07e206) in the control computer's environment. `Go2SDK2(interface)` subscribes to checksum-valid joint/IMU state and defaults to read-only operation.
 
-Integrate `run_control_loop()` with callbacks supplying measured perception and velocity commands. Sending torques requires `enable_motion=True`, an operator-released built-in controller, the recorded neutral pose and an initial zero velocity command. The adapter checks state age, rejects incomplete terrain data and closes its channels on errors. It requests zero torque during cleanup after publishing.
+Pass measured perception and velocity callbacks to `run_control_loop()` for read-only inference. For motion, `Go2SDK2(interface, enable_motion=True, acquire_control=...)` requires an independent controller for the same robot. It owns the sole motor publisher and grants an exclusive `SupervisedControl` session. Acquisition must arrange a watchdog that takes over if the client disappears, and roll back if acquisition fails. This repository does not supply that hardware service. Keep the built-in controller engaged when using the read-only path.
+
+When the motion duration expires, the policy keeps running with a zero velocity command. The supervisor must report fresh contact, body stability and motor ownership during both phases. Once all four feet support the upright, stationary robot for 0.5 continuous seconds, the client requests takeover. It then confirms another 0.5 seconds of measured support with the standing controller in charge before returning. That controller continues supporting the robot after client exit.
+
+Each phase has a 3-second deadline and uses the host monotonic clock. A gap over 50 ms restarts the stability window. A timeout raises an error and requests independent takeover during cleanup.
+
+A control fault relinquishes the policy session immediately. Cleanup closes the local subscription without sending a motor packet. Communication loss and process death require the independent watchdog to take over.
+
+In a flat-ground MuJoCo test using the A baseline, zero velocity was requested at 0.6, 1.2 and 3.0 seconds of forward motion. All three runs reached the 0.5-second standing criterion within 0.61 seconds of the request, then maintained four-foot support throughout the final second after simulated takeover. This tested the stop sequence with simulated sensing and actuation.
 
 ## Limitations
 
-CPU tests compare observations and motor outputs with the original Isaac Lab functions and test SDK2 calls through vendor fakes. Physical deployment, sensor calibration, terrain/velocity estimation and independent stop/recovery still require hardware validation; zero-torque cleanup is not a verified physical emergency stop.
+CPU tests cover observation and motor parity, handover ordering, stale feedback and simulated faults. Contact and posture calibration, hardware takeover, link loss and recovery require validation on the target robot. The timing windows above are software acceptance criteria.

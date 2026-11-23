@@ -17,8 +17,9 @@
 import contextlib
 import threading
 import time
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -44,30 +45,107 @@ def torque_message(
     return message
 
 
+@dataclass(frozen=True)
+class StandFeedback:
+    """One measured supervisor sample on the control host's monotonic clock."""
+
+    timestamp: float
+    standing_controller_active: bool
+    feet_in_contact: tuple[bool, bool, bool, bool]
+    body_stable: bool
+
+
+class StandingWindow:
+    """Require 0.5 s of continuous, fresh support measurements in one phase."""
+
+    def __init__(self, started: float) -> None:
+        self.started = started
+        self.previous = started
+        self.stable_since: float | None = None
+
+    def observe(
+        self, feedback: StandFeedback, now: float, *, owner_active: bool
+    ) -> bool:
+        stamp = feedback.timestamp
+        if not (self.started < stamp <= now and now - stamp <= 0.05):
+            self.stable_since = None
+            return False
+        if stamp - self.previous > 0.05:
+            self.stable_since = None
+        supported = (
+            feedback.standing_controller_active == owner_active
+            and feedback.feet_in_contact == (True, True, True, True)
+            and feedback.body_stable
+        )
+        if not supported or stamp < self.previous:
+            self.stable_since = None
+        if stamp <= self.previous:
+            return False
+        self.previous = stamp
+        if supported and self.stable_since is None:
+            self.stable_since = stamp
+        return self.stable_since is not None and stamp - self.stable_since >= 0.5
+
+
+class SupervisedControl(Protocol):
+    """Exclusive session with an independent motor controller.
+
+    The supervisor owns the sole LowCmd publisher, fences expired sessions and
+    takes over on heartbeat loss. All calls must be bounded. State feedback
+    must come from measured contact and upright, stationary body estimates.
+    """
+
+    def write(self, message: Any, *, timeout: float) -> bool:
+        """Send a policy packet while this session still owns control."""
+        ...
+
+    def request_stand(self) -> None:
+        """Revoke this session's writes and independently stop and support the robot.
+
+        This request is idempotent. Support must persist after client exit.
+        """
+        ...
+
+    def stand_feedback(self) -> StandFeedback:
+        """Return current contact, body stability, and motor ownership during this session."""
+        ...
+
+
 class Go2SDK2:
     """Own one SDK2 session; command publishing requires explicit opt-in.
 
     Args:
         interface: Network interface connected to Go2.
-        enable_motion: Permit LowCmd publishing after the built-in controller
-            has already been released by the operator.
+        enable_motion: Enable policy output through the independent supervisor.
+        acquire_control: Obtain an exclusive, watchdog-backed session for this
+            interface. Acquisition must roll back on failure.
     """
 
     _lock = threading.Lock()
     _active = False
     _interface = None
 
-    def __init__(self, interface: str, *, enable_motion: bool = False) -> None:
+    def __init__(
+        self,
+        interface: str,
+        *,
+        enable_motion: bool = False,
+        acquire_control: Callable[[str], SupervisedControl] | None = None,
+    ) -> None:
         if not interface.strip():
             raise ValueError("Expected an explicit Go2 network interface")
+        if enable_motion and acquire_control is None:
+            raise PermissionError("Motion requires an independent standing supervisor")
+        self._acquire_control = acquire_control
         self.interface, self.enable_motion = interface, enable_motion
         self._resources = contextlib.ExitStack()
         self._state_lock = threading.Lock()
         self._state = None
         self._tick = None
         self._owned = False
-        self._published = False
-        self._publisher = None
+        self._session: SupervisedControl | None = None
+        self._standing_requested = False
+        self._policy_writes_enabled = False
 
     def connect(self) -> None:
         """Subscribe to LowState and optionally prepare the torque publisher."""
@@ -76,11 +154,10 @@ class Go2SDK2:
         )
         from unitree_sdk2py.core.channel import (
             ChannelFactoryInitialize,
-            ChannelPublisher,
             ChannelSubscriber,
         )
         from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_
-        from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowCmd_, LowState_
+        from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_
         from unitree_sdk2py.utils.crc import CRC
 
         with self._lock:
@@ -97,17 +174,20 @@ class Go2SDK2:
             self._resources.callback(subscriber.Close)
             subscriber.Init(self._receive, 1)
             if self.enable_motion:
+                if self._acquire_control is None:
+                    raise PermissionError(
+                        "Motion requires an independent standing supervisor"
+                    )
+                self._session = self._acquire_control(self.interface)
                 switcher = MotionSwitcherClient()
                 switcher.SetTimeout(1.0)
                 switcher.Init()
                 status, mode = switcher.CheckMode()
                 if status != 0 or mode["name"]:
                     raise RuntimeError(
-                        "Expected the operator to release the built-in controller before joint control"
+                        "Expected exclusive low-level control after supervisor acquisition"
                     )
-                self._publisher = ChannelPublisher("rt/lowcmd", LowCmd_)
-                self._resources.callback(self._publisher.Close)
-                self._publisher.Init()
+                self._policy_writes_enabled = True
         except BaseException:
             self.close()
             raise
@@ -136,35 +216,59 @@ class Go2SDK2:
 
     def write(self, torques: Sequence[float] | np.ndarray) -> None:
         """Send twelve motor torques through the explicitly enabled publisher."""
-        if not self.enable_motion or not self._owned or self._publisher is None:
+        if self._session is None or not self._policy_writes_enabled:
             raise PermissionError("Go2 SDK2 command publishing is disabled")
         age = time.monotonic() - self.read().timestamp
         if not 0 <= age <= 0.05:
             raise TimeoutError(
                 "Go2 joint state exceeded the 50-ms publication deadline"
             )
-        self._send(torques)
-
-    def _send(self, torques: Sequence[float] | np.ndarray) -> None:
         message = torque_message(self._message, torques, self._crc)
-        self._published = True
-        if not self._publisher.Write(message, timeout=0.005):
+        if not self._session.write(message, timeout=0.005):
             raise OSError("Go2 LowCmd write failed")
 
+    def _request_stand(self) -> None:
+        self._policy_writes_enabled = False
+        if self._session is not None and not self._standing_requested:
+            self._session.request_stand()
+            self._standing_requested = True
+
+    def stand_feedback(self) -> StandFeedback:
+        """Read bounded, nonblocking support and ownership feedback."""
+        if self._session is None:
+            raise RuntimeError("Standing feedback requires an active supervisor")
+        return self._session.stand_feedback()
+
+    def finish_standing(self) -> None:
+        """Transfer control and confirm the supervisor continues supporting the robot."""
+        if self._session is None:
+            raise RuntimeError("Standing confirmation requires an active supervisor")
+        window = StandingWindow(time.monotonic())
+        self._request_stand()
+        deadline = window.started + 3.0
+        while time.monotonic() < deadline:
+            feedback = self.stand_feedback()
+            now = time.monotonic()
+            if now >= deadline:
+                break
+            if window.observe(feedback, now, owner_active=True):
+                return
+            time.sleep(0.01)
+        raise TimeoutError("Standing handover was not confirmed within 3 seconds")
+
     def close(self) -> None:
-        """Attempt zero torque after publishing, then release this session's channels."""
+        """Relinquish policy control on faults and release local channels."""
         if not self._owned:
             return
         try:
-            if self._published:
-                self._send(np.zeros(12, dtype=np.float32))
+            self._request_stand()
         finally:
             try:
                 self._resources.close()
             finally:
-                self._publisher = None
+                self._session = None
+                self._standing_requested = False
                 self._state = None
                 self._tick = None
-                self._published = False
                 with self._lock:
                     Go2SDK2._active = self._owned = False

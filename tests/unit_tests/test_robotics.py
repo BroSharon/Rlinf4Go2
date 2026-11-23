@@ -9431,6 +9431,42 @@ def go2_control_case(tmp_path):
     )
 
 
+def test_go2_replay_cli_matches_reference(tmp_path, monkeypatch, go2_control_case):
+    from examples.embodiment.go2_abc.deploy import main
+
+    record = go2_control_case[-1]
+    model_dir = tmp_path / "models" / "A"
+    model_dir.mkdir(parents=True)
+    (tmp_path / "policy.pt").rename(model_dir / "baseline.pt")
+    frames = tmp_path / "frames.jsonl"
+    frames.write_text(json.dumps(record["frame"]) + "\n")
+    output = tmp_path / "commands.jsonl"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "deploy",
+            "--task",
+            "A",
+            "--group",
+            "baseline",
+            "--data",
+            str(tmp_path),
+            "--frames",
+            str(frames),
+            "--output",
+            str(output),
+        ],
+    )
+    main()
+    command = json.loads(output.read_text())
+    assert command["time"] == record["frame"]["time"]
+    for key in ("target_q_sdk", "torque_sdk"):
+        np.testing.assert_allclose(
+            command[key], record["expected"][key], rtol=1e-6, atol=1e-6
+        )
+
+
 def test_go2_control_matches_original_observations_and_dc_motor(go2_control_case):
     control, state, perception, command, record = go2_control_case
     result = control.step(state, perception, command, 1.0)
@@ -9523,19 +9559,20 @@ def test_go2_sdk2_readonly_session_never_opens_publisher(monkeypatch):
 
 
 def test_go2_sdk2_torque_packet_and_cleanup(monkeypatch):
-    from robot_mocks.go2 import FakeGo2SDK
+    from robot_mocks.go2 import FakeGo2SDK, FakeStandingSupervisor
 
     from examples.embodiment.go2_abc.sdk2 import Go2SDK2
 
     sdk = FakeGo2SDK()
     sdk.install(monkeypatch)
-    transport = Go2SDK2("test0", enable_motion=True)
+    supervisor = FakeStandingSupervisor(sdk)
+    transport = Go2SDK2("test0", enable_motion=True, acquire_control=supervisor.acquire)
     transport.connect()
     sdk.callback(sdk.state())
     transport.write(np.arange(12))
     transport.close()
     packets = [event[1] for event in sdk.events if event[0] == "write"]
-    assert len(packets) == 2
+    assert len(packets) == 1
     packet = packets[0]
     assert packet.head == [0xFE, 0xEF] and packet.level_flag == 0xFF
     assert packet.crc == 42
@@ -9544,46 +9581,48 @@ def test_go2_sdk2_torque_packet_and_cleanup(monkeypatch):
         assert motor.kp == motor.kd == 0.0
         assert motor.q == 2.146e9 and motor.dq == 16000.0
     assert all(motor.tau == 0.0 for motor in packet.motor_cmd[12:])
-    assert all(motor.tau == 0.0 for motor in packets[1].motor_cmd)
-    assert ("writer_close",) in sdk.events and ("reader_close",) in sdk.events
+    assert sdk.events[-2:] == [("stand",), ("reader_close",)]
 
 
 def test_go2_sdk2_active_builtin_mode_rejects_joint_control(monkeypatch):
-    from robot_mocks.go2 import FakeGo2SDK
+    from robot_mocks.go2 import FakeGo2SDK, FakeStandingSupervisor
 
     from examples.embodiment.go2_abc.sdk2 import Go2SDK2
 
     sdk = FakeGo2SDK()
     sdk.mode = "sport"
     sdk.install(monkeypatch)
-    with pytest.raises(RuntimeError, match="operator"):
-        Go2SDK2("test0", enable_motion=True).connect()
+    supervisor = FakeStandingSupervisor(sdk)
+    with pytest.raises(RuntimeError, match="exclusive"):
+        Go2SDK2(
+            "test0", enable_motion=True, acquire_control=supervisor.acquire
+        ).connect()
     assert not any(event[0] in ("publisher", "write") for event in sdk.events)
     assert ("reader_close",) in sdk.events
 
 
 def test_go2_sdk2_write_failure_still_closes_channels(monkeypatch):
-    from robot_mocks.go2 import FakeGo2SDK
+    from robot_mocks.go2 import FakeGo2SDK, FakeStandingSupervisor
 
     from examples.embodiment.go2_abc.sdk2 import Go2SDK2
 
     sdk = FakeGo2SDK()
     sdk.write_ok = False
     sdk.install(monkeypatch)
-    transport = Go2SDK2("test0", enable_motion=True)
+    supervisor = FakeStandingSupervisor(sdk)
+    transport = Go2SDK2("test0", enable_motion=True, acquire_control=supervisor.acquire)
     transport.connect()
     sdk.callback(sdk.state())
     with pytest.raises(OSError):
         transport.write(np.zeros(12))
-    with pytest.raises(OSError):
-        transport.close()
-    assert ("writer_close",) in sdk.events and ("reader_close",) in sdk.events
+    transport.close()
+    assert sdk.events[-2:] == [("stand",), ("reader_close",)]
 
 
 def test_go2_control_loop_stale_perception_never_publishes(
     monkeypatch, go2_control_case
 ):
-    from robot_mocks.go2 import FakeGo2SDK
+    from robot_mocks.go2 import FakeGo2SDK, FakeStandingSupervisor
 
     from examples.embodiment.go2_abc.deploy import run_control_loop
     from examples.embodiment.go2_abc.sdk2 import Go2SDK2
@@ -9591,7 +9630,8 @@ def test_go2_control_loop_stale_perception_never_publishes(
     control, state, perception, _, _ = go2_control_case
     sdk = FakeGo2SDK()
     sdk.install(monkeypatch)
-    transport = Go2SDK2("test0", enable_motion=True)
+    supervisor = FakeStandingSupervisor(sdk)
+    transport = Go2SDK2("test0", enable_motion=True, acquire_control=supervisor.acquire)
     transport.connect()
     msg = sdk.state()
     for motor, q in zip(msg.motor_state[:12], state.q, strict=True):
@@ -9602,7 +9642,165 @@ def test_go2_control_loop_stale_perception_never_publishes(
             control, transport, lambda: perception, lambda: [0.0, 0.0, 0.0]
         )
     assert not any(event[0] == "write" for event in sdk.events)
-    assert ("writer_close",) in sdk.events
+    assert ("stand",) in sdk.events
+
+
+def test_go2_sdk2_requires_independent_standing_supervisor(monkeypatch):
+    from robot_mocks.go2 import FakeGo2SDK
+
+    from examples.embodiment.go2_abc.sdk2 import Go2SDK2
+
+    sdk = FakeGo2SDK()
+    sdk.install(monkeypatch)
+    with pytest.raises(PermissionError, match="standing supervisor"):
+        Go2SDK2("test0", enable_motion=True)
+    assert sdk.events == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "stable",
+        "interrupted",
+        "no_owner",
+        "foot_lifted",
+        "moving",
+        "frozen",
+        "stale",
+        "future",
+        "missing_samples",
+        "late_tick",
+        "never_settles",
+        "early_takeover",
+        "request_failed",
+    ],
+)
+def test_go2_control_loop_requires_standing_handover(
+    monkeypatch, go2_control_case, case
+):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from robot_mocks.go2 import FakeGo2SDK, FakeStandingSupervisor
+
+    from examples.embodiment.go2_abc import deploy, sdk2
+
+    controller, state, perception, _, _ = go2_control_case
+    sdk = FakeGo2SDK()
+    sdk.install(monkeypatch)
+    supervisor = FakeStandingSupervisor(sdk)
+    now = 1.0
+
+    def sleep(seconds):
+        nonlocal now
+        now += seconds + (0.007 if case == "late_tick" else 0.0)
+
+    clock = SimpleNamespace(monotonic=lambda: now, sleep=sleep)
+    monkeypatch.setattr(deploy, "time", clock)
+    monkeypatch.setattr(sdk2, "time", clock)
+    transport = sdk2.Go2SDK2(
+        "test0", enable_motion=True, acquire_control=supervisor.acquire
+    )
+    transport.connect()
+    msg = sdk.state()
+    for motor, q in zip(msg.motor_state[:12], state.q, strict=True):
+        motor.q = q
+    sdk.callback(msg)
+    observations = []
+    settling_samples = []
+    velocities = []
+    step = controller.step
+
+    def record_step(state, sensors, velocity, timestamp):
+        result = step(state, sensors, velocity, timestamp)
+        velocities.append(tuple(velocity))
+        return result
+
+    monkeypatch.setattr(controller, "step", record_step)
+
+    def feedback():
+        if not supervisor.standing:
+            settling_samples.append(now)
+            return sdk2.StandFeedback(
+                now, case == "early_takeover", (True,) * 4, case != "never_settles"
+            )
+        observations.append(now)
+        stamp = now
+        if case == "frozen":
+            stamp = observations[0] + 0.01
+        if case == "stale":
+            stamp -= 0.2
+        if case == "future":
+            stamp += 0.2
+        if case == "missing_samples":
+            stamp = observations[0] + int((now - observations[0]) * 10) / 10
+        supported = case != "foot_lifted"
+        if case == "interrupted" and 0.29 <= now - observations[0] <= 0.35:
+            supported = False
+        return sdk2.StandFeedback(
+            stamp, case != "no_owner", (True, supported, True, True), case != "moving"
+        )
+
+    supervisor.feedback = feedback
+    if case == "request_failed":
+
+        def failed_request():
+            raise OSError("stand request failed")
+
+        monkeypatch.setattr(supervisor, "request_stand", failed_request)
+
+    def perceive():
+        msg.tick += 1
+        sdk.callback(msg)
+        return replace(perception, timestamp=now)
+
+    def run():
+        deploy.run_control_loop(
+            controller,
+            transport,
+            perceive,
+            lambda: [0.2 if velocities else 0.0, 0.0, 0.0],
+            duration=0.019,
+        )
+
+    if case in ("stable", "interrupted"):
+        run()
+        assert now - observations[0] >= (0.85 if case == "interrupted" else 0.5)
+    elif case == "never_settles":
+        with pytest.raises(TimeoutError, match="did not settle"):
+            run()
+        assert not observations
+    elif case == "early_takeover":
+        with pytest.raises(RuntimeError, match="took control"):
+            run()
+        assert not observations
+    elif case == "request_failed":
+        with pytest.raises(OSError, match="stand request failed"):
+            run()
+    elif case == "late_tick":
+        with pytest.raises(TimeoutError, match="two physics steps"):
+            run()
+        assert not observations
+    else:
+        with pytest.raises(TimeoutError, match="handover"):
+            run()
+    assert sdk.events[-1] == ("reader_close",)
+    writes = [event[1] for event in sdk.events if event[0] == "write"]
+    assert len(writes) == len(velocities)
+    if case == "late_tick":
+        assert len(writes) == 1
+    else:
+        assert velocities[1:4] == [(0.2, 0.0, 0.0)] * 3
+        assert all(v == (0.0, 0.0, 0.0) for v in velocities[4:])
+        if case not in ("early_takeover", "never_settles"):
+            assert settling_samples[-1] - settling_samples[0] >= 0.5
+    assert not any(event[0] == "publisher" for event in sdk.events)
+    if case != "request_failed":
+        assert sdk.events[-2] == ("stand",)
+        assert sdk.events.count(("stand",)) == 1
+    transport.close()
+    with pytest.raises(PermissionError):
+        transport.write(np.zeros(12))
 
 
 @pytest.fixture

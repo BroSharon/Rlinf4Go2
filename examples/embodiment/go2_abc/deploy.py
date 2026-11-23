@@ -27,7 +27,7 @@ from rlinf.utils.logging import get_logger
 
 from .control import Go2Control, JointState, Perception, vector
 from .prepare_data import DEFAULT_DATA
-from .sdk2 import Go2SDK2
+from .sdk2 import Go2SDK2, StandingWindow
 
 
 def run_control_loop(
@@ -41,15 +41,21 @@ def run_control_loop(
     """Run the supplied state/perception sources; a default transport only observes.
 
     Perception must supply synchronized body velocity and the measured terrain
-    grid. The caller connects the transport after arranging its robot startup.
+    grid. Motion requires a supervisor that can take over and maintain standing.
     """
-    if not math.isfinite(duration) or duration <= 0:
-        raise ValueError("Expected a finite positive control duration")
     started = deadline = time.monotonic()
     first = True
+    settling = None
     try:
-        while time.monotonic() - started < duration:
-            state, sensors, velocity = transport.read(), perception(), command()
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError("Expected a finite positive control duration")
+        while True:
+            now = time.monotonic()
+            stopping = now - started >= duration
+            if stopping and not transport.enable_motion:
+                break
+            velocity = [0.0, 0.0, 0.0] if stopping else command()
+            state, sensors = transport.read(), perception()
             now = time.monotonic()
             if first and transport.enable_motion:
                 q = vector(state.q, 12, "SDK initial pose")[controller.sdk_indices]
@@ -64,15 +70,30 @@ def run_control_loop(
                     raise ValueError(
                         "Expected zero velocity command for the first control sample"
                     )
+            if settling is not None:
+                feedback = transport.stand_feedback()
+                now = time.monotonic()
+                if now - settling.started >= 3.0:
+                    raise TimeoutError("Policy did not settle within 3 seconds")
+                if feedback.standing_controller_active:
+                    raise RuntimeError(
+                        "Supervisor took control while policy was settling"
+                    )
+                if settling.observe(feedback, now, owner_active=False):
+                    break
             result = controller.step(state, sensors, velocity, now)
             if transport.enable_motion:
                 transport.write(result["torque_sdk"])
+                if stopping and settling is None:
+                    settling = StandingWindow(time.monotonic())
             first = False
             deadline += controller.spec["physics_dt"]
             remaining = deadline - time.monotonic()
             if remaining < -controller.spec["physics_dt"]:
                 raise TimeoutError("Control loop missed its physics-step deadline")
             time.sleep(max(0.0, remaining))
+        if transport.enable_motion:
+            transport.finish_standing()
     finally:
         transport.close()
 
