@@ -35,7 +35,7 @@ RLinf is a flexible and scalable open-source RL infrastructure designed for Embo
 
 ## What's NEW!
 
-- [2026/11] Go2 EDU high-level control supports six-direction checks. Guide: [Go2 control](examples/embodiment/go2_sport/README.md).
+- [2026/11] Go2 supports [ABC simulation training on A40](examples/embodiment/go2_abc/README.md) and [six-direction high-level control](examples/embodiment/go2_sport/README.md).
 
 - [2026/11] 🔥 RLinf supports Reward Feedback Learning (ReFL) for fine-tuning SD3.5 Medium with ImageReward. Doc: [ReFL](https://rlinf.readthedocs.io/en/latest/rst_source/examples/embodied/refl.html).
 - [2026/11] 🔥 RLinf supports Intel GPUs. See the [hardware support matrix](#hardware-support) and PR: [Intel GPU support (#1832)](https://github.com/RLinf/RLinf/pull/1832).

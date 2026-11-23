@@ -18,13 +18,16 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import importlib.util
 import inspect
+import json
 import logging
 import math
 import os
 import pickle
 import random
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -70,6 +73,171 @@ from rlinf.utils.env_helpers.delay_sampler import (
 )
 from rlinf.workers.rollout.phyai import phyai_rollout_worker
 from rlinf.workers.rollout.phyai.phyai_rollout_worker import PhyAIRolloutWorker
+
+
+def test_go2_audit_checks_models_without_result_records(tmp_path, monkeypatch):
+    from examples.embodiment.go2_abc import audit
+    from examples.embodiment.go2_abc.policy import Go2Policy
+
+    data = tmp_path / "data"
+    files = []
+    checkpoint = tmp_path / "policy.pt"
+    torch.save({"model_state_dict": Go2Policy().state_dict()}, checkpoint)
+    checksum = audit.digest(checkpoint)
+    for task in "ABC":
+        for group in ("baseline", "ppo", "rlinf"):
+            relative = f"models/{task}/{group}.pt"
+            target = data / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.hardlink_to(checkpoint)
+            files.append({"path": relative, "sha256": checksum})
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"files": files}))
+    monkeypatch.setattr(audit, "HERE", tmp_path)
+
+    assert audit.audit(data) == {"models": 9, "device": "cpu", "status": "passed"}
+    files[0]["sha256"] = "incorrect"
+    manifest.write_text(json.dumps({"files": files}))
+    with pytest.raises(AssertionError, match="models/A/baseline.pt"):
+        audit.audit(data)
+
+    checkpoint.unlink()
+    incomplete = Go2Policy().state_dict()
+    incomplete.pop("actor.0.weight")
+    torch.save({"model_state_dict": incomplete}, checkpoint)
+    first = data / files[0]["path"]
+    first.unlink()
+    first.hardlink_to(checkpoint)
+    files[0]["sha256"] = audit.digest(checkpoint)
+    manifest.write_text(json.dumps({"files": files}))
+    with pytest.raises(RuntimeError, match="Missing key"):
+        audit.audit(data)
+
+
+@pytest.mark.parametrize("task", [None, "A", "B", "C"])
+def test_go2_prepare_task_stages_only_its_baseline(tmp_path, monkeypatch, task):
+    from examples.embodiment.go2_abc import prepare_data
+
+    manifest_dir = tmp_path / "manifest"
+    manifest_dir.mkdir()
+    source = tmp_path / "source"
+    files = []
+    for name in "ABC":
+        content = f"baseline {name}".encode()
+        source_file = source / f"{name}.pt"
+        source_file.parent.mkdir(exist_ok=True)
+        source_file.write_bytes(content)
+        files.append(
+            {
+                "path": f"models/{name}/baseline.pt",
+                "source": source_file.name,
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        )
+    (source / "history.json").write_bytes(b"history")
+    files.append(
+        {
+            "path": "raw/A/baseline/23456.json",
+            "source": "history.json",
+            "sha256": hashlib.sha256(b"history").hexdigest(),
+        }
+    )
+    (manifest_dir / "manifest.json").write_text(json.dumps({"files": files}))
+    monkeypatch.setattr(prepare_data, "HERE", manifest_dir)
+    destination = tmp_path / "data"
+    argv = ["prepare_data", "--data", str(destination), "--source", str(source)]
+    if task:
+        argv += ["--task", task]
+    monkeypatch.setattr(sys, "argv", argv)
+    prepare_data.main()
+    expected_tasks = task or "ABC"
+    expected_paths = [f"models/{name}/baseline.pt" for name in expected_tasks]
+    if task is None:
+        expected_paths.append("raw/A/baseline/23456.json")
+    assert (
+        sorted(
+            path.relative_to(destination).as_posix()
+            for path in destination.rglob("*")
+            if path.is_file()
+        )
+        == expected_paths
+    )
+    for name in expected_tasks:
+        assert (
+            destination / f"models/{name}/baseline.pt"
+        ).read_bytes() == f"baseline {name}".encode()
+    (destination / f"models/{expected_tasks[0]}/baseline.pt").write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="SHA256 mismatch"):
+        prepare_data.main()
+    (destination / f"models/{expected_tasks[0]}/baseline.pt").unlink()
+    (source / f"{expected_tasks[0]}.pt").write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="SHA256 mismatch"):
+        prepare_data.main()
+    assert not (destination / f"models/{expected_tasks[0]}/baseline.pt").exists()
+
+
+@pytest.mark.parametrize("task", ["A", "B", "C"])
+@pytest.mark.parametrize("group", ["baseline", "ppo", "rlinf"])
+def test_go2_run_checks_only_selected_baseline(tmp_path, monkeypatch, task, group):
+    import rlinf
+    from examples.embodiment.go2_abc import run
+
+    project = tmp_path / "project"
+    here = project / "examples/embodiment/go2_abc"
+    here.mkdir(parents=True)
+    data = tmp_path / "data"
+    baseline = data / f"models/{task}/baseline.pt"
+    baseline.parent.mkdir(parents=True)
+    baseline.write_bytes(b"baseline")
+    manifest = {
+        "files": [
+            {
+                "path": f"models/{task}/baseline.pt",
+                "sha256": hashlib.sha256(b"baseline").hexdigest(),
+            }
+        ],
+        "benchmark_commit": "benchmark-revision",
+        "isaaclab_commit": "isaaclab-revision",
+    }
+    (here / "manifest.json").write_text(json.dumps(manifest))
+    (here / "config").mkdir()
+    config = {"entry": "eval.py", "argv": ["--checkpoint", "initial"], "env": {}}
+    (here / f"config/{task}_baseline.json").write_text(json.dumps(config))
+    (here / f"config/{task}_ppo.json").write_text(json.dumps(config))
+    monkeypatch.setattr(run, "HERE", here)
+    monkeypatch.setattr(rlinf, "__file__", str(project / "rlinf/__init__.py"))
+    monkeypatch.setenv("GO2_ABC_DATA", str(data))
+    monkeypatch.setenv("GO2_ABC_RUNTIME", str(tmp_path / "runtime"))
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+    with pytest.raises(RuntimeError, match="allocated A40 Slurm job"):
+        run.launch(f"{task}_{group}", execute=True)
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+
+    def revision(command, **kwargs):
+        return {"benchmark": "benchmark-revision", "IsaacLab": "isaaclab-revision"}[
+            Path(command[2]).name
+        ]
+
+    monkeypatch.setattr(run.subprocess, "check_output", lambda *args, **kwargs: "wrong")
+    with pytest.raises(RuntimeError, match="Expected benchmark at"):
+        run.launch(f"{task}_{group}", execute=True)
+    monkeypatch.setattr(run.subprocess, "check_output", revision)
+
+    class ReachedExecution(Exception):
+        pass
+
+    def stop_before_execution(*args, **kwargs):
+        if task == "B":
+            assert kwargs["env"]["GO2_B1_NUMERIC_GUARD"] == "1"
+        raise ReachedExecution
+
+    monkeypatch.setattr(run.subprocess, "run", stop_before_execution)
+    with pytest.raises(ReachedExecution):
+        run.launch(f"{task}_{group}", execute=True)
+    shutil.rmtree(data / "runs")
+    baseline.write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="SHA256 mismatch"):
+        run.launch(f"{task}_{group}", execute=True)
 
 
 def test_embodied_entry_registers_external_models_before_validation(tmp_path):

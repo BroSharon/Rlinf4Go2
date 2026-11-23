@@ -34,7 +34,7 @@ RLinf 是一个灵活且可扩展的开源框架，专为具身智能和智能�
 
 ## 最新动态
 
-- [2026/11] Go2 EDU 高层运动控制支持六方向检查。说明：[Go2 六方向控制](examples/embodiment/go2_sport/README.zh-CN.md)。
+- [2026/11] Go2 支持 [A40 上的 ABC 仿真训练](examples/embodiment/go2_abc/README.zh-CN.md)和[六方向高层控制](examples/embodiment/go2_sport/README.zh-CN.md)。
 
 - [2026/11] 🔥 RLinf 支持奖励反馈学习（ReFL），使用 ImageReward 微调 SD3.5 Medium。文档：[ReFL](https://rlinf.readthedocs.io/zh-cn/latest/rst_source/examples/embodied/refl.html)。
 - [2026/11] 🔥 RLinf 支持 Intel GPU。支持的模型与环境组合见[硬件支持矩阵](#硬件支持)，PR：[Intel GPU 支持（#1832）](https://github.com/RLinf/RLinf/pull/1832)。

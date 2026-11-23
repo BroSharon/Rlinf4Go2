@@ -22,7 +22,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from examples.embodiment.go2_abc.prepare_data import DEFAULT_DATA, HERE
+from examples.embodiment.go2_abc.prepare_data import (
+    DEFAULT_DATA,
+    HERE,
+    baseline_input,
+    digest,
+)
 from rlinf.utils.logging import get_logger
 
 
@@ -116,9 +121,9 @@ def launch(experiment: str, execute: bool) -> None:
                 raise RuntimeError(
                     f"Expected {name} at {manifest[key]}, found {revision}"
                 )
-        from examples.embodiment.go2_abc.audit import audit
-
-        audit(data)
+        expected = baseline_input(manifest, task)["sha256"]
+        if digest(initial) != expected:
+            raise ValueError(f"SHA256 mismatch: {initial}")
 
     if group == "rlinf":
         run(

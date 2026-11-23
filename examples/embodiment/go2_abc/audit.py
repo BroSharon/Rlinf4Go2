@@ -12,12 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Verify the ABC grid against its weights and episode records on CPU."""
+"""Check the nine ABC policy inputs and their PPO interfaces on CPU."""
 
 import argparse
-import csv
 import json
-import math
 import os
 from pathlib import Path
 
@@ -26,7 +24,7 @@ from rlinf.utils.logging import get_logger
 
 
 def audit(data: Path) -> dict:
-    """Check input hashes, pooled metrics, policy loading, and analytical KL."""
+    """Check input hashes, policy loading, and analytical KL."""
     import torch
     from torch.nn import functional as F
 
@@ -34,72 +32,18 @@ def audit(data: Path) -> dict:
 
     manifest = json.loads((HERE / "manifest.json").read_text())
     expected = {
-        f"{task}_{group}" for task in "ABC" for group in ("baseline", "ppo", "rlinf")
+        f"models/{task}/{group}.pt"
+        for task in "ABC"
+        for group in ("baseline", "ppo", "rlinf")
     }
-    experiments = manifest["experiments"]
-    assert len(experiments) == 9 and {x["id"] for x in experiments} == expected
-    for item in manifest["files"]:
-        assert digest(data / item["path"]) == item["sha256"], item["path"]
-    rows = list(csv.DictReader((HERE / "results.csv").open(encoding="utf-8-sig")))
-    assert len(rows) == 9, "Expected exactly nine result rows"
+    files = manifest["files"]
+    assert len(files) == 9 and {item["path"] for item in files} == expected
     generator = torch.Generator().manual_seed(0)
     observations = torch.randn(8, 235, generator=generator)
-    total = 0
-    for experiment, row in zip(experiments, rows, strict=True):
-        task, group = experiment["task"], experiment["group"]
-        assert experiment["training_seed"] == 0
-        assert experiment["evaluation_seeds"] == [23456, 34567]
-        episodes = []
-        for seed in experiment["evaluation_seeds"]:
-            raw = json.loads((data / f"raw/{task}/{group}/{seed}.json").read_text())
-            assert raw["summary"] == experiment["summaries"][str(seed)]
-            assert len(raw["episodes"]) == raw["summary"]["num_episodes"]
-            episodes.extend(raw["episodes"])
-        count = len(episodes)
-        total += count
-        threshold = {"A": 0.80, "B": 0.75, "C": 0.70}[task]
-        for episode in episodes:
-            tracking = (
-                episode["termination_reason"] != "failure"
-                and episode["success_step_ratio"] >= threshold
-            )
-            assert episode["episode_success"] == tracking
-        successes = sum(x["episode_success"] for x in episodes)
-        assert int(row["跟踪成功回合数"]) == successes
-        assert int(row["评测回合数"]) == count
-        values = {
-            "跟踪成功率（%）": 100 * successes / count,
-            "平均线速度误差（m/s）": sum(x["mean_lin_vel_error_xy"] for x in episodes)
-            / count,
-            "平均偏航角速度误差（rad/s）": sum(
-                x["mean_ang_vel_error_z"] for x in episodes
-            )
-            / count,
-            "失败终止率（%）": 100
-            * sum(x["termination_reason"] == "failure" for x in episodes)
-            / count,
-            "平均达标步比例（%）": 100
-            * sum(x["success_step_ratio"] for x in episodes)
-            / count,
-            "平均存活时间（s）": sum(x["alive_time_s"] for x in episodes) / count,
-        }
-        if task == "C":
-            passages = sum(x["physical_obstacle_passage"] for x in episodes)
-            assert int(row["实际障碍通过回合数"]) == passages
-            for episode in episodes:
-                assert episode["joint_tracking_and_passage"] == (
-                    episode["episode_success"] and episode["physical_obstacle_passage"]
-                )
-            values["实际障碍通过率（%）"] = 100 * passages / count
-            values["同回合跟踪且通过率（%）"] = (
-                100 * sum(x["joint_tracking_and_passage"] for x in episodes) / count
-            )
-        for key, value in values.items():
-            assert math.isclose(float(row[key]), value, abs_tol=1e-9), (
-                experiment["id"],
-                key,
-            )
-        policy = Go2Policy(str(data / experiment["model"]), 235, 235)
+    for item in files:
+        path = data / item["path"]
+        assert digest(path) == item["sha256"], item["path"]
+        policy = Go2Policy(str(path), 235, 235)
         state = policy.state_dict()
         assert all(torch.isfinite(x).all() for x in state.values())
         assert (policy.std > 0).all()
@@ -124,9 +68,7 @@ def audit(data: Path) -> dict:
         shifted = policy.default_forward(rollout["forward_inputs"])["kl_divergence"]
         assert (shifted > 0).all(), "Analytical KL did not detect a changed policy"
     return {
-        "experiments": 9,
-        "inputs": len(manifest["files"]),
-        "episodes": total,
+        "models": len(files),
         "device": "cpu",
         "status": "passed",
     }

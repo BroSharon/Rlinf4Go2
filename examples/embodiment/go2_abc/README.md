@@ -2,55 +2,78 @@
 
 [简体中文](README.zh-CN.md)
 
-Run the three Go2 tasks with the completed PPO policy, ordinary PPO continuation, and RLinf-Huber continuation: nine groups in total.
+Run Go2 omnidirectional movement (A), rough terrain (B), and stairs (C) on a remote Slurm A40 node. Each task has a saved PPO baseline, an ordinary PPO continuation, and an RLinf-Huber continuation.
 
-The table below contains historical results. The [seed-0 snapshot](https://github.com/QuincyQAQ/RLinf/blob/2bb493a79e4e923cb2dcafd999d7e372a803afb1/artifacts/go2_seed0_20261122/README.md) preserves the fixed-seed code, launchers, runtime sources, and full reproduction evidence.
-
-| Task | Source Updates | Added Updates per Continuation | Parallel Environments | Baseline Tracking | Continue PPO | Continue RLinf-Huber |
-|---|---:|---:|---:|---:|---:|---:|
-| A: omnidirectional | 1500 | 1000 | 2048 | 91.4687% | 93.3301% | 97.6574% |
-| B: rough terrain | 3000 | 1000 | 2048 | 99.8535% | 99.6094% | 99.8047% |
-| C: stairs | 2200 | 1000 | 1024 | 99.8535% | 100% | 100% |
-
-C stair-passage rates in simulation are 21.3867%, 44.8242%, and 76.5625%, respectively. [Results](results.csv) include velocity errors and the fraction of episodes that pass both tracking and passage checks. Training seed is 0; evaluation seeds are 23456 and 34567, pooled by episode count.
+The continuations start from the same task-specific baseline weights with a fresh optimizer, use training seed 0, and add 1,000 updates. A and B use 2,048 parallel environments; C uses 1,024. The baseline group evaluates its saved weights; each continuation trains and then evaluates. Evaluation uses seeds 23456 and 34567.
 
 ## Prepare Inputs
 
-Use the [prepared A40 runtime](https://github.com/QuincyQAQ/RLinf/tree/b405f67382ce63af2401a2a9ff5b0b3c7f28ccb7): Isaac Lab 2.3.2, Isaac Sim 5.1, RSL-RL 3.1.2, its package overlays and assets. The simulator tasks and ordinary PPO come from the pinned [multi-task benchmark](https://github.com/viktoriageorrg04/bsc-thesis-multi-task-RL-env); this example reuses their control and rewards.
+From the root of a clean checkout on your Slurm cluster, set the paths to its prepared runtime and shared assets.
 
-From the RLinf repository root, download the nine weights and 18 evaluations, or add `--source /path/to/frozen-runtime` to copy them locally:
+```bash
+export GO2_ABC_RUNTIME=/path/to/prepared-runtime
+export GO2_ABC_SHARED_RUNTIME=/path/to/shared-runtime
+export GO2_ABC_IMAGE="$GO2_ABC_SHARED_RUNTIME/containers/isaac-lab_2.3.2.sif"
+export GO2_ABC_CONTAINER=singularity
+```
+
+The runtime includes Isaac Lab 2.3.2, Isaac Sim 5.1, RSL-RL 3.1.2, the benchmark, scripts, package overlays, and assets. It uses the pinned [multi-task benchmark](https://github.com/viktoriageorrg04/bsc-thesis-multi-task-RL-env) for simulator tasks and ordinary PPO. The runtime's `benchmark` and `IsaacLab` directories must remain Git checkouts with HEADs matching [manifest.json](manifest.json). On another cluster, set these variables to your own compatible runtime, shared assets, image, and container executable. The public repository alone does not reconstruct this runtime.
+
+Prepare the A baseline from the pinned manifest.
+
+```bash
+python -m examples.embodiment.go2_abc.prepare_data --task A
+```
+
+For B or C, use the matching checkpoint and destination directory. The runner checks the selected baseline against its manifest hash.
+
+## Submit a Job
+
+From the remote repository root, submit an A RLinf-Huber continuation to the cluster:
+
+```bash
+sbatch --gres gpu:a40:1 --cpus-per-task 4 --mem 64G --time 06:00:00 examples/embodiment/go2_abc/run_a40.sbatch A_rlinf
+```
+
+Use `A_baseline` for baseline evaluation or `A_ppo` for ordinary PPO continuation. Replace A with B or C after preparing that task's baseline. Adjust the partition, QoS, account, and resources to match your cluster. The submitted job starts the container and runs on the allocated A40 compute node. A submitted job is not a completed run; check its state with `squeue -j <job-id>` or `sacct -j <job-id>` and inspect its logs.
+
+The historical A and B continuations also ran two-update checks with 64 and 2,048 environments before the full run. This entry point runs the full configuration directly and does not include those checks.
+
+Every experiment requires a fresh `data/go2_abc/runs/<experiment>/` directory. For ordinary PPO, also use a runtime with a fresh `benchmark/logs/rsl_rl/<experiment>` path. The runner refuses to overwrite existing outputs.
+
+The run directory contains stage `console.log` files and evaluation outputs; continuations also export `policy.pt`. Ordinary PPO's original training logs and checkpoints remain under `$GO2_ABC_RUNTIME/benchmark/logs/rsl_rl/<experiment>/`. Slurm's default output is `slurm-<jobid>.out`.
+
+## Configure Experiments
+
+The RLinf continuations share [config/_common.yaml](config/_common.yaml), with task overrides in [A_rlinf.yaml](config/A_rlinf.yaml), [B_rlinf.yaml](config/B_rlinf.yaml), and [C_rlinf.yaml](config/C_rlinf.yaml). Ordinary PPO uses [A_ppo.json](config/A_ppo.json), [B_ppo.json](config/B_ppo.json), and [C_ppo.json](config/C_ppo.json); baseline evaluation uses [A_baseline.json](config/A_baseline.json), [B_baseline.json](config/B_baseline.json), and [C_baseline.json](config/C_baseline.json).
+
+The configurations retain 235 observations each for actor and critic, 12 actions, ELU layers `[512, 256, 128]`, 24 rollout steps, and five PPO epochs. RLinf uses Huber value loss, learning rate `3e-4`, entropy coefficient `0.003`, and analytical KL target `0.005`; ordinary PPO uses adaptive KL target `0.01`. B retains the numerical guard; C continuations use the late posture weights.
+
+## Results and Offline Checks
+
+The following results come from runs on an A40 cluster: all A and B groups and C RLinf-Huber used RLinf `e8815cac`, while C baseline and PPO used `0e8129b9`. Training used seed 0; evaluation seeds 23456 and 34567 are pooled by episode count. The experiments have not been rerun on the current branch. A and B report one run per group; a single training seed does not establish stability across seeds. A dash means stair passage was not evaluated for that task.
+
+| Task | Group | Tracking success | Simulated stair passage |
+| --- | --- | --- | --- |
+| A: omnidirectional | PPO baseline | 91.47% (1887/2063) | — |
+| A: omnidirectional | PPO continuation | 93.33% (1917/2054) | — |
+| A: omnidirectional | RLinf-Huber continuation | 96.73% (1981/2048) | — |
+| B: rough terrain | PPO baseline | 99.85% (2045/2048) | — |
+| B: rough terrain | PPO continuation | 99.61% (2040/2048) | — |
+| B: rough terrain | RLinf-Huber continuation | 99.85% (2045/2048) | — |
+| C: stairs | PPO baseline | 99.85% (2045/2048) | 21.39% (438/2048) |
+| C: stairs | PPO continuation | 100% (2048/2048) | 44.82% (918/2048) |
+| C: stairs | RLinf-Huber continuation | 100% (2048/2048) | 45.17% (925/2048) |
+
+At RLinf `e8815cac`, two independent C RLinf-Huber continuations with training seed 0 produced identical tensors in all 20 saved checkpoints and identical 2,048 evaluation records across seeds 23456 and 34567. The evaluation measured 100% tracking success and 45.1660% simulated stair passage. This agreement applies to C in the recorded A40 runtime and recipe; one training seed does not establish stability across seeds. The Slurm scheduler records show that all three A jobs and all three B retry jobs completed; this only establishes their job status.
+
+For an optional offline check of nine model weights, download them and verify their hashes, policy loading, and analytical KL with Python 3.11, PyTorch, and RLinf dependencies. The weights may come from different historical training runs and are intended for offline replay; the check does not establish results from a new training run. Downloading requires network access; the check runs on CPU and does not require an A40:
 
 ```bash
 python -m examples.embodiment.go2_abc.prepare_data
 python -m examples.embodiment.go2_abc.audit
 ```
 
-The CPU audit checks 33 input hashes, strict weight loading, analytical KL, and all 18,454 episode records against the CSV. Inputs and run outputs live in `data/go2_abc/`.
+## Motion Control
 
-## Run It
-
-Set the runtime path and preview one group. `GO2_ABC_CONTAINER` selects the installed Singularity or Apptainer executable.
-
-```bash
-export GO2_ABC_RUNTIME=/path/to/prepared-runtime
-export GO2_ABC_CONTAINER=singularity
-bash examples/embodiment/go2_abc/container.sh --experiment C_rlinf
-```
-
-Inside an allocated A40 Slurm job, add `--execute` to run it. Experiment names are `A_baseline`, `A_ppo`, `A_rlinf`, and the corresponding B/C names. A baseline evaluates the saved completed policy; each continuation starts from that task's same source weights with a fresh optimizer, then evaluates both seeds. Logs and checkpoints go under `data/go2_abc/runs/<experiment>/`.
-
-## Configuration and Integration
-
-The configs retain 235 observations each for the actor and critic, 12 actions, ELU layers `[512, 256, 128]`, 24 rollout steps and five PPO epochs. RLinf uses Huber value loss, learning rate `3e-4`, entropy coefficient `0.003`, and analytical KL target `0.005`; ordinary PPO retains its adaptive KL target `0.01`. B retains the recorded numerical guard; C continuations use the late posture weights.
-
-The branch starts from upstream RLinf `dcf00fd6`. Go2 registers through `RLINF_EXT_MODULE`. [Manifest](manifest.json) pins the recorded code, input hashes and checkpoint paths.
-
-For observation assembly, motor conversion and SDK2 integration, see [Motion Control](MOTION.md).
-
-[Go2 six-direction hardware control](../go2_sport/README.md) is also included in this branch.
-
-The one-off task C reproduction scripts remain in the [seed-0 snapshot](https://github.com/QuincyQAQ/RLinf/tree/2bb493a79e4e923cb2dcafd999d7e372a803afb1/examples/embodiment/go2_abc).
-
-## Limitations
-
-The table records runs on RLinf `5aa29ec`. At `e8815cac`, two independent C RLinf-Huber continuations produced identical tensors at all 20 saved checkpoints and identical 2048 evaluation records: tracking 100%, stair passage 45.1660%. A/B validation is in progress. The historical 76.5625% policy evaluation was reproduced, but its training score has not been reproduced. Exact agreement is verified for the recorded A40 runtime and recipe, not arbitrary hardware or dependencies.
+[Motion Control](MOTION.md) describes ABC policy observation assembly, motor conversion, and SDK2 integration. [Go2 six-direction hardware control](../go2_sport/README.md) uses a separate SportClient path. ABC policy deployment, sensing, and independent stopping still require hardware validation.

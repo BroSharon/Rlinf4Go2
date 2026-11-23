@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Fetch the nine policies and their recorded evaluation inputs."""
+"""Fetch the nine policy inputs or one task's baseline policy."""
 
 import argparse
 import hashlib
@@ -35,13 +35,27 @@ def digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def prepare(destination: Path, source: Path | None = None) -> None:
+def baseline_input(manifest: dict, task: str) -> dict:
+    """Find the manifest entry for one task's initial policy."""
+    path = f"models/{task}/baseline.pt"
+    matches = [item for item in manifest["files"] if item["path"] == path]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Expected one manifest entry for {path}, found {len(matches)}"
+        )
+    return matches[0]
+
+
+def prepare(
+    destination: Path, source: Path | None = None, task: str | None = None
+) -> None:
     """Stage only the manifest's inputs, verifying every content hash."""
     manifest = json.loads((HERE / "manifest.json").read_text())
+    items = manifest["files"] if task is None else [baseline_input(manifest, task)]
     destination.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as temporary:
         archive = Path(temporary) / "weights.tar.gz"
-        for item in manifest["files"]:
+        for item in items:
             target = destination / item["path"]
             if not target.resolve().is_relative_to(destination.resolve()):
                 raise ValueError(f"Input escapes data directory: {item['path']}")
@@ -72,7 +86,7 @@ def prepare(destination: Path, source: Path | None = None) -> None:
                 raise ValueError(f"SHA256 mismatch: {item['path']}")
             shutil.move(staged, target)
     logging.getLogger(__name__).info(
-        "Verified %s inputs in %s", len(manifest["files"]), destination
+        "Verified %s inputs in %s", len(items), destination
     )
 
 
@@ -83,9 +97,10 @@ def main() -> None:
         "--data", type=Path, default=Path(os.environ.get("GO2_ABC_DATA", DEFAULT_DATA))
     )
     parser.add_argument("--source", type=Path)
+    parser.add_argument("--task", choices=("A", "B", "C"))
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
-    prepare(args.data, args.source)
+    prepare(args.data, args.source, args.task)
 
 
 if __name__ == "__main__":

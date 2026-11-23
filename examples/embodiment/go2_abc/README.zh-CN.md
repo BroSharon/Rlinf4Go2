@@ -2,55 +2,78 @@
 
 [English](README.md)
 
-运行全向移动、粗糙地形、楼梯三个任务。每个任务包括完整 PPO 基线、继续普通 PPO、继续 RLinf-Huber，共九组。
+在远程 Slurm A40 节点运行 Go2 全向移动（A）、粗糙地形（B）和楼梯（C）任务。每个任务包含已训练的 PPO 基线、普通 PPO 续训和 RLinf-Huber 续训。
 
-下表为历史成绩。[seed 0 归档](https://github.com/QuincyQAQ/RLinf/blob/2bb493a79e4e923cb2dcafd999d7e372a803afb1/artifacts/go2_seed0_20261122/README.zh-CN.md)保留固定 seed 的代码、启动脚本、运行环境源码及完整复现证据。
-
-| 任务 | 基线训练轮数 | 每个续训组增加轮数 | 并行环境数 | 基线跟踪成功率 | 继续 PPO | 继续 RLinf-Huber |
-|---|---:|---:|---:|---:|---:|---:|
-| A：全向移动 | 1500 | 1000 | 2048 | 91.4687% | 93.3301% | 97.6574% |
-| B：粗糙地形 | 3000 | 1000 | 2048 | 99.8535% | 99.6094% | 99.8047% |
-| C：楼梯 | 2200 | 1000 | 1024 | 99.8535% | 100% | 100% |
-
-C 在仿真中的楼梯通过率依次为 21.3867%、44.8242%、76.5625%。[结果表](results.csv)还包含速度误差、同回合跟踪与通过均成功的比例。训练 seed 为 0；评测 seed 为 23456、34567，分别评测后按回合数合并。
+两个续训组从同一任务的基线权重出发，各自新建优化器，训练 seed 为 0，增加 1000 轮更新。A、B 使用 2048 个并行环境，C 使用 1024 个。基线组只评测已保存权重；续训组训练后评测。评测 seed 为 23456 和 34567。
 
 ## 准备输入
 
-复用[已准备的 A40 运行环境](https://github.com/QuincyQAQ/RLinf/tree/b405f67382ce63af2401a2a9ff5b0b3c7f28ccb7)，包括 Isaac Lab 2.3.2、Isaac Sim 5.1、RSL-RL 3.1.2、依赖包和资产。仿真任务、普通 PPO 来自固定版本的[多任务 benchmark](https://github.com/viktoriageorrg04/bsc-thesis-multi-task-RL-env)，控制与奖励沿用原实现。
+在 Slurm 集群上进入干净的仓库根目录，将示例路径替换为已准备好的运行环境和共享资产路径。
 
-在 RLinf 仓库根目录下载九份权重和 18 份评测记录。已有归档可加上 `--source /path/to/frozen-runtime`，从本地复制。
+```bash
+export GO2_ABC_RUNTIME=/path/to/prepared-runtime
+export GO2_ABC_SHARED_RUNTIME=/path/to/shared-runtime
+export GO2_ABC_IMAGE="$GO2_ABC_SHARED_RUNTIME/containers/isaac-lab_2.3.2.sif"
+export GO2_ABC_CONTAINER=singularity
+```
+
+运行环境包含 Isaac Lab 2.3.2、Isaac Sim 5.1、RSL-RL 3.1.2、benchmark、脚本、依赖包和资产。仿真任务与普通 PPO 使用固定版本的[多任务 benchmark](https://github.com/viktoriageorrg04/bsc-thesis-multi-task-RL-env)。运行环境中的 `benchmark` 和 `IsaacLab` 目录须保留 Git checkout，HEAD 与[清单](manifest.json)一致。其他集群须将这些变量设为各自兼容的运行环境、共享资产、镜像和容器程序路径。公开仓库本身不能独立重建这套运行环境。
+
+按清单准备 A 任务的基线权重。
+
+```bash
+python -m examples.embodiment.go2_abc.prepare_data --task A
+```
+
+B、C 任务使用对应的权重和目标目录。启动器会按清单校验所选基线的哈希。
+
+## 提交作业
+
+在远程仓库根目录提交 A 任务的 RLinf-Huber 续训：
+
+```bash
+sbatch --gres gpu:a40:1 --cpus-per-task 4 --mem 64G --time 06:00:00 examples/embodiment/go2_abc/run_a40.sbatch A_rlinf
+```
+
+基线评测使用 `A_baseline`，普通 PPO 续训使用 `A_ppo`。准备 B 或 C 的基线后，将实验名中的 A 换成 B 或 C。其他集群须按实际情况调整分区、QoS、账户和资源。提交后的作业在分配的 A40 计算节点启动容器并运行。提交作业不代表运行完成；用 `squeue -j <job-id>` 或 `sacct -j <job-id>` 检查状态，并查看日志。
+
+历史 A、B 续训在正式运行前还分别做了 64 和 2048 环境、各两轮的预检。此入口直接运行完整配置，不包含这些预检。
+
+每组实验都要求 `data/go2_abc/runs/<experiment>/` 输出目录尚不存在。普通 PPO 还需要确保运行环境中的 `benchmark/logs/rsl_rl/<experiment>` 路径尚不存在。启动器会拒绝覆盖已有结果。
+
+运行目录包含各阶段的 `console.log` 和评测结果；续训组还会导出 `policy.pt`。普通 PPO 原始训练日志和 checkpoint 保存在 `$GO2_ABC_RUNTIME/benchmark/logs/rsl_rl/<experiment>/`。Slurm 默认输出文件为 `slurm-<jobid>.out`。
+
+## 配置实验
+
+RLinf 续训共用 [config/_common.yaml](config/_common.yaml)，任务覆盖配置分别为 [A_rlinf.yaml](config/A_rlinf.yaml)、[B_rlinf.yaml](config/B_rlinf.yaml) 和 [C_rlinf.yaml](config/C_rlinf.yaml)。普通 PPO 使用 [A_ppo.json](config/A_ppo.json)、[B_ppo.json](config/B_ppo.json) 和 [C_ppo.json](config/C_ppo.json)；基线评测使用 [A_baseline.json](config/A_baseline.json)、[B_baseline.json](config/B_baseline.json) 和 [C_baseline.json](config/C_baseline.json)。
+
+配置保留 actor、critic 各 235 维观测、12 维动作、ELU 隐藏层 `[512, 256, 128]`、24 步 rollout 和五轮 PPO 更新。RLinf 使用 Huber 价值损失、学习率 `3e-4`、熵系数 `0.003` 和解析 KL 目标 `0.005`；普通 PPO 使用自适应 KL 目标 `0.01`。B 保留数值保护，C 续训使用后期姿态奖励权重。
+
+## 结果与离线检查
+
+下表来自 A40 集群上运行的结果：A、B 的全部组别及 C 的 RLinf-Huber 组使用 RLinf `e8815cac`，C 的基线和普通 PPO 组使用 `0e8129b9`。训练 seed 为 0，评测 seed 为 23456 和 34567，按实际回合数合并。当前分支尚未重跑这些实验。A、B 每组为一次运行结果；单个训练 seed 无法说明跨 seed 稳定性。`—` 表示该任务没有评测楼梯通过率。
+
+| 任务 | 组别 | 跟踪成功率 | 仿真楼梯通过率 |
+| --- | --- | --- | --- |
+| A：全向移动 | PPO 基线 | 91.47%（1887/2063） | — |
+| A：全向移动 | 普通 PPO 续训 | 93.33%（1917/2054） | — |
+| A：全向移动 | RLinf-Huber 续训 | 96.73%（1981/2048） | — |
+| B：粗糙地形 | PPO 基线 | 99.85%（2045/2048） | — |
+| B：粗糙地形 | 普通 PPO 续训 | 99.61%（2040/2048） | — |
+| B：粗糙地形 | RLinf-Huber 续训 | 99.85%（2045/2048） | — |
+| C：楼梯 | PPO 基线 | 99.85%（2045/2048） | 21.39%（438/2048） |
+| C：楼梯 | 普通 PPO 续训 | 100%（2048/2048） | 44.82%（918/2048） |
+| C：楼梯 | RLinf-Huber 续训 | 100%（2048/2048） | 45.17%（925/2048） |
+
+在 RLinf `e8815cac` 上，C 任务的两次独立 RLinf-Huber 续训均使用训练 seed 0，得到完全一致的 20 份 checkpoint 张量和 2048 条评测记录；评测 seed 为 23456 和 34567，跟踪成功率为 100%，仿真楼梯通过率为 45.1660%。一致性结论限于记录的 A40 运行环境与配置下的 C 任务，单个训练 seed 无法说明跨 seed 稳定性。Slurm 调度器记录显示 A 的三组作业和 B 重试的三组作业均已完成，这只说明作业状态。
+
+如需对九份模型权重做可选离线检查，可下载权重，使用 Python 3.11、PyTorch 和 RLinf 依赖校验哈希、策略加载及解析 KL。权重可能来自不同的历史训练，用于离线回放；此检查不代表新的训练成绩。下载需要联网；检查在 CPU 上运行，无需 A40：
 
 ```bash
 python -m examples.embodiment.go2_abc.prepare_data
 python -m examples.embodiment.go2_abc.audit
 ```
 
-CPU 检查涵盖 33 个输入文件的哈希、权重严格加载、解析 KL，以及 18,454 个回合与 CSV 的一致性。输入和运行产物统一放在 `data/go2_abc/`。
+## 运动控制
 
-## 运行
-
-设置已有运行环境的路径，预览一组命令。`GO2_ABC_CONTAINER` 指向已安装的 Singularity 或 Apptainer。
-
-```bash
-export GO2_ABC_RUNTIME=/path/to/prepared-runtime
-export GO2_ABC_CONTAINER=singularity
-bash examples/embodiment/go2_abc/container.sh --experiment C_rlinf
-```
-
-进入已分配 A40 的 Slurm 作业后，加 `--execute` 执行。实验名为 `A_baseline`、`A_ppo`、`A_rlinf`，B、C 同理。基线组评测已完成训练的权重；两个续训组从同一份基线权重出发，各自新建优化器，训练后评测两个 seed。日志和 checkpoint 存入 `data/go2_abc/runs/<experiment>/`。
-
-## 配置与合并
-
-配置保留 actor、critic 各 235 维观测、12 维动作、ELU 隐藏层 `[512, 256, 128]`、24 步 rollout、五轮 PPO 更新。RLinf 使用 Huber 价值损失、学习率 `3e-4`、熵系数 `0.003`、解析 KL 目标 `0.005`；普通 PPO 沿用自适应 KL 目标 `0.01`。B 保留原实验的数值保护，C 续训采用后期姿态奖励权重。
-
-分支从上游 RLinf `dcf00fd6` 建立，Go2 使用 `RLINF_EXT_MODULE` 注册。[清单](manifest.json)记录实验代码版本、输入哈希与权重路径。
-
-观测拼接、电机换算与 SDK2 接口见[运动控制说明](MOTION.zh-CN.md)。
-
-本分支同时包含 [Go2 六方向真机控制](../go2_sport/README.zh-CN.md)。
-
-C 任务的单次复现脚本保留在 [seed 0 归档版本](https://github.com/QuincyQAQ/RLinf/tree/2bb493a79e4e923cb2dcafd999d7e372a803afb1/examples/embodiment/go2_abc)。
-
-## Limitations
-
-表中成绩来自 RLinf `5aa29ec`。在 `e8815cac` 上，C 的两次独立 RLinf-Huber 续训得到完全一致的 20 份 checkpoint 张量和 2048 条评测记录：跟踪成功率 100%，楼梯通过率 45.1660%。A、B 正在验证。历史 76.5625% 模型的评测已复现，训练成绩尚未复现。逐项一致的验证范围是记录的 A40 环境与配置，不涵盖任意硬件或依赖版本。
+[运动控制说明](MOTION.zh-CN.md)介绍 ABC policy 的观测拼接、电机换算和 SDK2 接口。[Go2 六方向真机控制](../go2_sport/README.zh-CN.md)使用独立的 SportClient 链路。ABC policy 的部署、感知和独立停止仍需真机验证。
