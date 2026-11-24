@@ -4,7 +4,7 @@
 
 Run Go2 omnidirectional movement (A), rough terrain (B), and stairs (C) on a remote Slurm A40 node. Each task has a saved PPO baseline, an ordinary PPO continuation, and an RLinf-Huber continuation.
 
-The continuations start from the same task-specific baseline weights with a fresh optimizer, use training seed 0, and add 1,000 updates. A and B use 2,048 parallel environments; C uses 1,024. The baseline group evaluates its saved weights; each continuation trains and then evaluates. Evaluation uses seeds 23456 and 34567.
+The continuations start from the same task-specific baseline weights with a fresh optimizer, use training seed 0 by default, and add 1,000 updates. A and B use 2,048 parallel environments; C uses 1,024. The baseline group evaluates its saved weights; each continuation trains and then evaluates. Evaluation uses seeds 23456 and 34567.
 
 ## Prepare Inputs
 
@@ -51,21 +51,21 @@ The configurations retain 235 observations each for actor and critic, 12 actions
 
 ## Results and Offline Checks
 
-The following results come from runs on an A40 cluster: all A and B groups and C RLinf-Huber used RLinf `e8815cac`, while C baseline and PPO used `0e8129b9`. Training used seed 0; evaluation seeds 23456 and 34567 are pooled by episode count. The experiments have not been rerun on the current branch. A and B report one run per group; a single training seed does not establish stability across seeds. A dash means stair passage was not evaluated for that task.
+All A40 runs pool episodes from evaluation seeds 23456 and 34567. Historical seed 0 results used `e8815cac`, except for the C baseline and ordinary PPO runs at `0e8129b9`. At `994a4268`, all six continuations trained for 1,000 updates with seed 2. Each baseline reused its frozen weights and reproduced both historical evaluation reports byte for byte.
 
-| Task | Group | Tracking success | Simulated stair passage |
-| --- | --- | --- | --- |
-| A: omnidirectional | PPO baseline | 91.47% (1887/2063) | — |
-| A: omnidirectional | PPO continuation | 93.33% (1917/2054) | — |
-| A: omnidirectional | RLinf-Huber continuation | 96.73% (1981/2048) | — |
-| B: rough terrain | PPO baseline | 99.85% (2045/2048) | — |
-| B: rough terrain | PPO continuation | 99.61% (2040/2048) | — |
-| B: rough terrain | RLinf-Huber continuation | 99.85% (2045/2048) | — |
-| C: stairs | PPO baseline | 99.85% (2045/2048) | 21.39% (438/2048) |
-| C: stairs | PPO continuation | 100% (2048/2048) | 44.82% (918/2048) |
-| C: stairs | RLinf-Huber continuation | 100% (2048/2048) | 45.17% (925/2048) |
+| Task | Group | Tracking (seed 0) | Tracking (seed 2) | Simulated stair passage (seed 0) | Simulated stair passage (seed 2) |
+| --- | --- | --- | --- | --- | --- |
+| A: omnidirectional | PPO baseline | 91.47% (1887/2063) | 91.47% (1887/2063) | — | — |
+| A: omnidirectional | PPO continuation | 93.33% (1917/2054) | 90.90% (1878/2066) | — | — |
+| A: omnidirectional | RLinf-Huber continuation | 96.73% (1981/2048) | 98.73% (2022/2048) | — | — |
+| B: rough terrain | PPO baseline | 99.85% (2045/2048) | 99.85% (2045/2048) | — | — |
+| B: rough terrain | PPO continuation | 99.61% (2040/2048) | 99.76% (2043/2048) | — | — |
+| B: rough terrain | RLinf-Huber continuation | 99.85% (2045/2048) | 99.90% (2046/2048) | — | — |
+| C: stairs | PPO baseline | 99.85% (2045/2048) | 99.85% (2045/2048) | 21.39% (438/2048) | 21.39% (438/2048) |
+| C: stairs | PPO continuation | 100% (2048/2048) | 99.80% (2044/2048) | 44.82% (918/2048) | 33.50% (686/2048) |
+| C: stairs | RLinf-Huber continuation | 100% (2048/2048) | 99.80% (2044/2048) | 45.17% (925/2048) | 41.94% (859/2048) |
 
-At RLinf `e8815cac`, two independent C RLinf-Huber continuations with training seed 0 produced identical tensors in all 20 saved checkpoints and identical 2,048 evaluation records across seeds 23456 and 34567. The evaluation measured 100% tracking success and 45.1660% simulated stair passage. This agreement applies to C in the recorded A40 runtime and recipe; one training seed does not establish stability across seeds. The Slurm scheduler records show that all three A jobs and all three B retry jobs completed; this only establishes their job status.
+Two C RLinf-Huber runs at `e8815cac` matched with training seed 0. On the same A40 setup, `994a4268` reproduced all 340 tensors across 20 checkpoints, all 2,048 episode records and both evaluation summaries exactly.
 
 For an optional offline check of nine model weights, download them and verify their hashes, policy loading, and analytical KL with Python 3.11, PyTorch, and RLinf dependencies. The weights may come from different historical training runs and are intended for offline replay; the check does not establish results from a new training run. Downloading requires network access; the check runs on CPU and does not require an A40:
 
