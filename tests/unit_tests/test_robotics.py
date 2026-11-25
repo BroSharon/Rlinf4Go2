@@ -10092,13 +10092,18 @@ def test_go2_sport_manual_check_records_observations_and_closes(go2_sdk, directi
 
 
 @pytest.mark.parametrize("failure", ["move", "feedback"])
-def test_go2_sport_manual_failures_preserve_report_and_cleanup(go2_sdk, failure):
+@pytest.mark.parametrize("record", [False, True])
+def test_go2_sport_manual_failures_preserve_report_and_cleanup(
+    go2_sdk, failure, record, tmp_path
+):
     from examples.embodiment.go2_sport.run import run_check
 
     go2_sdk.move_error = failure == "move"
     go2_sdk.publish_sport = failure != "feedback"
     with go2_sdk.streaming():
-        report = run_check("fake-go2", "forward", 1)
+        report = run_check(
+            "fake-go2", "forward", 1, tmp_path / "take" if record else None
+        )
     assert report["errors"]
     assert report["close_completed"]
     assert ("stop",) in go2_sdk.events
@@ -10106,11 +10111,150 @@ def test_go2_sport_manual_failures_preserve_report_and_cleanup(go2_sdk, failure)
     assert ("sport_close",) in go2_sdk.events
     if failure == "feedback":
         assert not any(e[0] == "move" for e in go2_sdk.events)
+    assert not list(tmp_path.rglob("*.pkl"))
+
+
+@pytest.mark.parametrize("handset", [False, True], ids=["direction", "handset"])
+def test_go2_sport_recording_round_trip(go2_sdk, monkeypatch, tmp_path, handset):
+    from robot_mocks.unitree_go2 import lowstate
+
+    from examples.embodiment.go2_sport.run import COMMANDS, run_check
+    from rlinf.robotics.parts.mobility.unitree_go2 import STATE_SHAPES
+
+    initial_rpy = np.zeros(3)
+
+    def command_echo_state():
+        # Each SDK Move changes the fake IMU reading by its command vector.
+        sample = lowstate()
+        sent = [e[1:] for e in go2_sdk.events if e[0] == "move"]
+        sample.imu_state.rpy = initial_rpy + np.sum(sent, axis=0)
+        return sample
+
+    monkeypatch.setattr("robot_mocks.unitree_go2.lowstate", command_echo_state)
+    for index, direction in enumerate(("forward", "right")):
+        initial_rpy[:] = index
+        go2_sdk.events.clear()
+        take = tmp_path / direction
+        sign = 1 if index == 0 else -1
+
+        def wireless_input():
+            start = go2_sdk.events.index(("subscribe", "rt/wirelesscontroller"))
+            events = go2_sdk.events[start:]
+            moves = sum(e[0] == "move" for e in events)
+            # Reset and the first zero action each request StopMove.
+            lx = sign * (-1) ** moves * 0.5 if events.count(("stop",)) >= 2 else 0
+            return SimpleNamespace(lx=lx, ly=-lx, rx=lx / 2, ry=0.02, keys=0)
+
+        go2_sdk.wireless_input = wireless_input
+        with go2_sdk.streaming():
+            report = run_check(
+                "fake-go2",
+                None if handset else direction,
+                1,
+                take,
+                handset="drive" if handset else None,
+            )
+        assert not report["errors"]
+        assert report["close_completed"]
+        assert report["sdk_stop_estimate"] == "below_thresholds"
+        assert report["speeds"] and all(
+            s["velocity"] == [0, 0, 0] for s in report["speeds"]
+        )
+        (path,) = (take / "pickle_episode").glob("*.pkl")
+        with path.open("rb") as stream:
+            episode = pickle.load(stream)
+        sent = [e[1:] for e in go2_sdk.events if e[0] == "move"]
+        if handset:
+            lx = sign * (-1.0) ** np.arange(9) * 0.5
+            np.testing.assert_allclose(
+                sent, np.column_stack((-0.3 * lx, -0.3 * lx, -0.25 * lx))
+            )
+            np.testing.assert_allclose(
+                [r["handset"]["lx"] for r in report["steps"]], [0, *lx]
+            )
+            sent.insert(0, (0, 0, 0))
+            np.testing.assert_array_equal([r["command"] for r in report["steps"]], sent)
+            assert ("wireless_close",) in go2_sdk.events
+        else:
+            np.testing.assert_allclose(sent, [COMMANDS[direction]] * 10)
+        np.testing.assert_array_equal(episode["actions"], sent)
+        states = [obs["state"] for obs in episode["observations"]]
+        assert len(states) == 11
+        for state in states:
+            assert {k: v.shape for k, v in state.items()} == STATE_SHAPES
+            np.testing.assert_allclose(state["joint_position"], np.arange(12) / 10)
+        rpy = np.stack([state["rpy"] for state in states])
+        np.testing.assert_array_equal(rpy[0], initial_rpy)
+        np.testing.assert_allclose(np.diff(rpy, axis=0), sent, atol=1e-6)
+        assert episode["truncated"] == [False] * 10 + [True]
+        assert not any(episode["terminated"])
+    events = list(go2_sdk.events)
+    assert run_check("fake-go2", "right", 1, take)["errors"]
+    assert go2_sdk.events == events
+
+
+@pytest.mark.parametrize("failure", ["off_center", "button", "expired"])
+def test_go2_handset_input_failure_ends_take(go2_sdk, tmp_path, failure):
+    from examples.embodiment.go2_sport.run import run_check
+
+    def wireless_input():
+        events = go2_sdk.events[
+            go2_sdk.events.index(("subscribe", "rt/wirelesscontroller")) :
+        ]
+        moved = any(e[0] == "move" for e in events)
+        if moved and failure == "expired":
+            return None
+        ly = 0.5 if events.count(("stop",)) >= 2 or failure == "off_center" else 0
+        return SimpleNamespace(lx=0, ly=ly, rx=0, ry=0, keys=int(moved))
+
+    go2_sdk.wireless_input = wireless_input
+    with go2_sdk.streaming():
+        report = run_check("fake-go2", None, 1, tmp_path / "take", handset="drive")
+    error = {"off_center": "Center", "button": "button pressed", "expired": "expired"}[
+        failure
+    ]
+    assert error in str(report["errors"])
+    moves = [i for i, e in enumerate(go2_sdk.events) if e[0] == "move"]
+    if failure == "off_center":
+        assert not moves
+    else:
+        assert moves
+        assert ("stop",) in go2_sdk.events[moves[-1] + 1 :]
+    assert report["close_completed"]
+    assert ("wireless_close",) in go2_sdk.events
+    assert not list(tmp_path.rglob("*.pkl"))
+
+
+def test_go2_handset_inspection_reads_axes_without_motion(go2_sdk):
+    from examples.embodiment.go2_sport.run import run_check
+
+    go2_sdk.wireless_input = lambda: SimpleNamespace(
+        lx=-1, ly=0.5, rx=0.04, ry=1, keys=0
+    )
+    with go2_sdk.streaming():
+        report = run_check("fake-go2", None, 1, handset="inspect")
+    assert report["errors"] == []
+    assert len(report["steps"]) == 10
+    assert all(r["mapped_velocity"] == [0.15, 0.3, 0] for r in report["steps"])
+    assert all("command" not in r for r in report["steps"])
+    assert not any(e[0] in ("client", "move", "stop") for e in go2_sdk.events)
+
+
+@pytest.mark.parametrize("axis", [float("nan"), float("inf"), 1.01])
+def test_go2_handset_invalid_sample_latches(axis):
+    from examples.embodiment.go2_sport.run import Handset
+
+    controller = Handset()
+    controller.callback(SimpleNamespace(lx=axis, ly=0, rx=0, ry=0, keys=0))
+    controller.callback(SimpleNamespace(lx=0, ly=0, rx=0, ry=0, keys=0))
+    with pytest.raises(ValueError, match="finite handset axes"):
+        controller.command(require_neutral=False)
 
 
 @pytest.mark.parametrize("mode", ["dry-run", "cancel"])
+@pytest.mark.parametrize("source", [["--direction", "forward"], ["--handset"]])
 def test_go2_sport_preview_and_cancel_never_open_sdk(
-    monkeypatch, go2_sdk, tmp_path, mode
+    monkeypatch, go2_sdk, tmp_path, mode, source
 ):
     from examples.embodiment.go2_sport.run import main
 
@@ -10119,10 +10263,11 @@ def test_go2_sport_preview_and_cancel_never_open_sdk(
         "go2-sport",
         "--interface",
         "fake-go2",
-        "--direction",
-        "forward",
+        *source,
         "--output",
         str(output),
+        "--record-dir",
+        str(tmp_path / "take"),
     ]
     if mode == "dry-run":
         argv += ["--dry-run"]
@@ -10132,6 +10277,7 @@ def test_go2_sport_preview_and_cancel_never_open_sdk(
     main()
     assert go2_sdk.events == []
     assert not output.exists()
+    assert not (tmp_path / "take").exists()
 
 
 def test_go2_sport_speed_estimates_require_fresh_stationary_window(monkeypatch):

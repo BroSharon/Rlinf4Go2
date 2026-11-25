@@ -46,6 +46,8 @@ class FakeGo2SDK:
         self.callback: Any = None
         self.sport_callback: Any = None
         self.publish_sport = True
+        self.wireless_callback: Any = None
+        self.wireless_input = lambda: SimpleNamespace(lx=0, ly=0, rx=0, ry=0, keys=0)
 
     def publish(self) -> None:
         """Deliver one recent state through the real adapter's SDK callback."""
@@ -64,6 +66,11 @@ class FakeGo2SDK:
                     self.sport_callback(
                         SimpleNamespace(velocity=[0.0, 0.0, 0.0], yaw_speed=0.0)
                     )
+                wireless_callback = self.wireless_callback
+                if wireless_callback is not None:
+                    sample = self.wireless_input()
+                    if sample is not None:
+                        wireless_callback(sample)
 
         thread = threading.Thread(target=publish, daemon=True)
         thread.start()
@@ -86,11 +93,18 @@ class FakeGo2SDK:
                 if self.topic == "rt/sportmodestate":
                     fake.sport_callback = callback
                     return
+                if self.topic == "rt/wirelesscontroller":
+                    fake.wireless_callback = callback
+                    return
                 fake.callback = callback
                 if fake.publish_initial:
                     fake.publish()
 
             def Close(self) -> None:
+                if self.topic == "rt/wirelesscontroller":
+                    fake.wireless_callback = None
+                    fake.events.append(("wireless_close",))
+                    return
                 if self.topic == "rt/sportmodestate":
                     fake.sport_callback = None
                     fake.events.append(("sport_close",))
@@ -133,6 +147,7 @@ class FakeGo2SDK:
             "unitree_sdk2py.idl.unitree_go.msg.dds_": {
                 "LowState_": SimpleNamespace,
                 "SportModeState_": SimpleNamespace,
+                "WirelessController_": SimpleNamespace,
             },
         }
         modules = {}
