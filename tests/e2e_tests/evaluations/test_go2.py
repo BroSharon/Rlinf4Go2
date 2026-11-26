@@ -89,3 +89,64 @@ def test_go2_tracking_mock_sdk(tmp_path):
     stopped = names.index("stop", last_move + 1)
     assert names.index("close") > stopped
     assert names.index("sport_close") > stopped
+
+
+def test_go2_policy_mock_sdk(tmp_path):
+    import numpy as np
+    import torch
+
+    from rlinf.envs.real.go2.control import Go2Control, JointState
+    from rlinf.models.embodiment.go2_policy import Go2Policy
+
+    root = Path(__file__).resolve().parents[3]
+    model = Go2Policy()
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.zero_()
+        model.actor[-1].bias.fill_(0.25)
+        model.std.fill_(1)
+    checkpoint = tmp_path / "policy.pt"
+    torch.save(model.state_dict(), checkpoint)
+    trace = tmp_path / "sdk.jsonl"
+    result = subprocess.run(
+        [
+            "bash",
+            "evaluations/run_eval.sh",
+            "realworld",
+            "realworld_go2_policy",
+            f"rollout.model.model_path={checkpoint}",
+            "env.eval.override_cfg.is_dummy=false",
+            "env.eval.override_cfg.max_num_steps=2",
+            "env.eval.max_episode_steps=2",
+            "env.eval.max_steps_per_rollout_epoch=2",
+            "cluster.node_groups.0.hardware.configs.0.interface=fake-go2",
+            f"runner.logger.log_path={tmp_path}",
+        ],
+        cwd=root,
+        env={
+            **os.environ,
+            "RLINF_ROBOT_MOCKS": "go2",
+            "RLINF_GO2_MOCK_TRACE": str(trace),
+            "PYTHONPATH": os.pathsep.join(
+                [str(root / "tests/robot_mocks"), os.environ.get("PYTHONPATH", "")]
+            ),
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "'eval/episode_len': array(2." in result.stdout
+    events = [json.loads(line) for line in trace.read_text().splitlines()]
+    commands = [event for event in events if event[0] == "lowcmd"]
+    assert len(commands) == 8
+    state = JointState(
+        q=[i / 10 for i in range(12)],
+        dq=[i / 20 for i in range(12)],
+        quaternion_wxyz=[1, 0, 0, 0],
+        gyroscope_b=[1, 2, 3],
+        timestamp=0,
+    )
+    expected = Go2Control("A").step(state, [0.25] * 12, 0)["torque_sdk"]
+    np.testing.assert_allclose(commands[0][1][:12], expected, atol=1e-6)
+    assert commands[0][2] == 42
+    assert [event[0] for event in events[-2:]] == ["publisher_close", "close"]

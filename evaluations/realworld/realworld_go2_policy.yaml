@@ -1,0 +1,77 @@
+defaults:
+  - override hydra/job_logging: stdout
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    rollout:
+      node_group: node
+      placement: 0
+    env:
+      node_group: go2
+      placement: 0
+  node_groups:
+    - label: go2
+      node_ranks: 0
+      hardware:
+        type: UnitreeGo2
+        configs:
+          - node_rank: 0
+            interface: ""
+            enable_motion: false
+
+runner:
+  task_type: embodied_eval
+  logger:
+    log_path: results/realworld_go2_policy
+    project_name: rlinf
+    experiment_name: go2_policy
+    logger_backends: null
+  max_epochs: 1
+  max_steps: 1
+  only_eval: true
+  val_check_interval: -1
+
+env:
+  group_name: EnvGroup
+  eval:
+    env_type: real
+    init_params:
+      id: Go2PolicyEnv-v1
+    override_cfg:
+      is_dummy: true
+      max_num_steps: 10
+      task: A
+      command: [0.1, 0.0, 0.0]
+    total_num_envs: 1
+    group_size: 1
+    seed: 0
+    max_episode_steps: 10
+    max_steps_per_rollout_epoch: 10
+    rollout_epoch: 1
+    use_fixed_reset_state_ids: false
+    auto_reset: false
+    ignore_terminations: false
+    video_cfg:
+      save_video: false
+
+rollout:
+  group_name: RolloutGroup
+  rollout_backend: huggingface
+  enable_offload: false
+  pipeline_stage_num: 1
+  model:
+    model_type: go2_policy
+    model_path: ???
+    precision: "32"
+    is_lora: false
+    load_to_device: false
+    action_dim: 12
+    num_action_chunks: 1
+    distribution_safety_patch: false

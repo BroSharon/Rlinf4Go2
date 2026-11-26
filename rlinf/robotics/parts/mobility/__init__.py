@@ -17,9 +17,11 @@
 from .base import MobileBase
 from .lekiwi import LeKiwiBase, body_to_wheel_raw, limit_wheel_raw
 from .unitree_go2 import Go2Base
+from .unitree_go2_lowlevel import Go2LowLevel
 
 __all__ = [
     "Go2Base",
+    "Go2LowLevel",
     "LeKiwiBase",
     "MobileBase",
     "body_to_wheel_raw",

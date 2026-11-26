@@ -121,9 +121,19 @@ Gymnasium 环境 ``Go2DriveEnv-v1`` 默认从 ``rt/lowstate`` 读取 Go2 EDU 的
 
       .. code-block:: bash
 
-         python -m pytest -q tests/e2e_tests/evaluations/test_go2_tracking.py
+         python -m pytest -q tests/e2e_tests/evaluations/test_go2.py
 
       真机运行前先完成上面的现场检查。在 Go2 硬件配置中将 ``interface`` 设为机器人网卡，将 ``enable_motion`` 设为 true，再设置 ``env.eval.override_cfg.is_dummy=false`` 启用 SDK。现场独立核实 ``rt/sportmodestate`` 速度的前两个分量分别表示机身前向和左向速度（m/s），偏航角速度以左转为正（rad/s）。把确认依据填入 ``env.eval.override_cfg.mapping_source``。
+
+      **4. 回放 Isaac Lab 运动策略**
+
+      评估配置可加载 Isaac Lab 训练流程的 Go2 checkpoint，用模拟输入检查 235 维观测和 12 维电机输出。启动时指定已准备好的 checkpoint 路径：
+
+      .. code-block:: bash
+
+         bash evaluations/run_eval.sh realworld realworld_go2_policy rollout.model.model_path=./data/go2_abc/models/A/baseline.pt
+
+      将路径换成你的 checkpoint。当前策略任务支持 dummy 和 mock SDK 输入。真机部署还需要实测机身速度和 187 点地形高度、经过验证的 200 Hz 电机循环，以及现场确认控制权切换和停车方式。
 
 可视化与结果
 ------------

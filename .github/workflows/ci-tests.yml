@@ -241,6 +241,7 @@ jobs:
               - 'examples/reward/preprocess_reward_dataset.py'
               - 'toolkits/realworld_check/check_go2_*.py'
               - 'tests/robot_mocks/unitree_go2.py'
+              - 'tests/fixtures/go2_control_reference.json'
               - 'tests/unit_tests/**'
               - 'tests/conftest.py'
               - '.github/workflows/unit-tests.yml'

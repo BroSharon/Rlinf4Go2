@@ -107,6 +107,7 @@ SupportedModel.PSI0 = SupportedModel.register("psi0", force=True)
 SupportedModel.PI0_FAST = SupportedModel.register("pi0_fast", force=True)
 SupportedModel.STARVLA = SupportedModel.register("starvla", force=True)
 SupportedModel.GO2_VELOCITY = SupportedModel.register("go2_velocity", force=True)
+SupportedModel.GO2_POLICY = SupportedModel.register("go2_policy", force=True)
 SupportedModel.MLP_POLICY = SupportedModel.register("mlp_policy", force=True)
 SupportedModel.RLT_MLP_POLICY = SupportedModel.register("rlt_mlp_policy", force=True)
 SupportedModel.RLT_TD3_MLP_POLICY = SupportedModel.register(
@@ -171,6 +172,7 @@ EMBODIED_MODEL = set(
         SupportedModel.PI0_FAST,
         SupportedModel.STARVLA,
         SupportedModel.GO2_VELOCITY,
+        SupportedModel.GO2_POLICY,
         SupportedModel.MLP_POLICY,
         SupportedModel.RLT_MLP_POLICY,
         SupportedModel.RLT_TD3_MLP_POLICY,

@@ -43,6 +43,7 @@ from rlinf.config import SupportedModel, validate_embodied_cfg
 from rlinf.hybrid_engines.fsdp.utils import get_fsdp_wrap_policy
 from rlinf.models import get_model, register_model
 from rlinf.models.embodiment.base_policy import BasePolicy, ForwardType
+from rlinf.models.embodiment.go2_policy import Go2Policy
 from rlinf.models.embodiment.mlp_policy.prefix_mlp_policy import PrefixPolicy
 from rlinf.models.embodiment.modules.rlt_token_transformer import (
     RLTTokenTransformer,
@@ -79,6 +80,37 @@ from rlinf.utils.env_helpers.delay_sampler import (
 )
 from rlinf.workers.rollout.phyai import phyai_rollout_worker
 from rlinf.workers.rollout.phyai.phyai_rollout_worker import PhyAIRolloutWorker
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_go2_policy_loads_checkpoint_and_predicts_deterministically(tmp_path, wrapped):
+    reference = Go2Policy().eval()
+    state = reference.state_dict()
+    checkpoint = tmp_path / "policy.pt"
+    torch.save({"model_state_dict": state} if wrapped else state, checkpoint)
+    cfg = OmegaConf.create(
+        {
+            "model_type": "go2_policy",
+            "model_path": str(checkpoint),
+            "distribution_safety_patch": False,
+            "precision": "32",
+            "is_lora": False,
+            "load_to_device": False,
+        }
+    )
+    model = get_model(cfg).eval()
+    observations = torch.linspace(-1, 1, 470).reshape(2, 235)
+    expected = reference.actor(observations)
+    actions, _ = model.predict_action_batch({"states": observations}, mode="eval")
+    assert actions.shape == (2, 1, 12)
+    torch.testing.assert_close(actions[:, 0], expected, rtol=0, atol=0)
+
+
+def test_go2_policy_rejects_incompatible_checkpoint(tmp_path):
+    checkpoint = tmp_path / "policy.pt"
+    torch.save({"actor.0.weight": torch.zeros(512, 48)}, checkpoint)
+    with pytest.raises(RuntimeError, match="size mismatch"):
+        Go2Policy(str(checkpoint))
 
 
 @pytest.mark.parametrize("layout", ["hwc", "chw"])

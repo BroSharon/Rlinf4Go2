@@ -10209,3 +10209,94 @@ def test_go2_sport_conflicts_only_include_potential_motion_commands(
     )
     monkeypatch.setattr(run.os, "getpid", lambda: 100)
     assert sorted(run.competing_processes()) == [23, 24]
+
+
+def test_go2_lowlevel_readonly_and_fresh_crc_state(go2_sdk):
+    from robot_mocks.unitree_go2 import lowstate
+
+    from rlinf.robotics.parts.mobility.unitree_go2_lowlevel import Go2LowLevel
+
+    base = Go2LowLevel("fake-go2", state_timeout=1.0)
+    base.connect()
+    try:
+        first = base.get_observation()
+        assert first["quaternion"].tolist() == [1, 0, 0, 0]
+        duplicate = lowstate()
+        duplicate.motor_state[0].q = 8
+        go2_sdk.callback(duplicate)
+        assert base.get_observation()["joint_position"][0] == first["joint_position"][0]
+        corrupt = lowstate(tick=2)
+        corrupt.crc = 0
+        go2_sdk.callback(corrupt)
+        assert base.get_observation()["timestamp"] == first["timestamp"]
+        go2_sdk.callback(lowstate(tick=3))
+        assert base.get_observation()["timestamp"] > first["timestamp"]
+        with pytest.raises(PermissionError, match="opt-in"):
+            base.send_action({"torque": np.zeros(12)})
+    finally:
+        base.disconnect()
+    assert not any(e[0] in ("publisher", "lowcmd") for e in go2_sdk.events)
+
+
+def test_go2_lowlevel_mode_torque_and_cleanup(go2_sdk):
+    from rlinf.robotics.parts.mobility.unitree_go2_lowlevel import Go2LowLevel
+
+    go2_sdk.motion_mode = "sport"
+    base = Go2LowLevel("fake-go2", enable_motion=True, state_timeout=1.0)
+    with pytest.raises(RuntimeError, match="inactive high-level"):
+        base.connect()
+    assert not any(event[0] == "publisher" for event in go2_sdk.events)
+    go2_sdk.motion_mode = ""
+    base.connect()
+    try:
+        torque = np.linspace(-10, 10, 12, dtype=np.float32)
+        base.send_action({"torque": torque})
+        event = next(e for e in go2_sdk.events if e[0] == "lowcmd")
+        assert event[1][:12] == pytest.approx(torque)
+        assert event[1][12:] == [0] * 8
+        assert event[2] == 42
+        with pytest.raises(ValueError, match="23.5"):
+            base.send_action({"torque": np.full(12, 24)})
+        go2_sdk.lowcmd_result = False
+        with pytest.raises(OSError, match="write failed"):
+            base.send_action({"torque": torque})
+        with pytest.raises(RuntimeError, match="reconnect"):
+            base.send_action({"torque": torque})
+    finally:
+        base.disconnect()
+    assert ("publisher_close",) in go2_sdk.events
+    assert ("close",) in go2_sdk.events
+
+
+def test_go2_lowlevel_stale_state_latches(go2_sdk):
+    from rlinf.robotics.parts.mobility.unitree_go2_lowlevel import Go2LowLevel
+
+    base = Go2LowLevel("fake-go2", enable_motion=True, state_timeout=0.02)
+    base.connect()
+    try:
+        time.sleep(0.03)
+        with pytest.raises(TimeoutError, match="expired"):
+            base.send_action({"torque": np.zeros(12)})
+        with pytest.raises(RuntimeError, match="reconnect"):
+            base.send_action({"torque": np.zeros(12)})
+        assert not any(event[0] == "lowcmd" for event in go2_sdk.events)
+    finally:
+        base.disconnect()
+
+
+def test_go2_lowlevel_crc_initialization_releases_dds(go2_sdk, monkeypatch):
+    from rlinf.robotics.parts.mobility.unitree_go2_lowlevel import Go2LowLevel
+
+    crc_module = sys.modules["unitree_sdk2py.utils.crc"]
+
+    def fail_crc():
+        raise OSError("CRC library unavailable")
+
+    original = crc_module.CRC
+    monkeypatch.setattr(crc_module, "CRC", fail_crc)
+    base = Go2LowLevel("fake-go2", state_timeout=1)
+    with pytest.raises(OSError, match="CRC library unavailable"):
+        base.connect()
+    monkeypatch.setattr(crc_module, "CRC", original)
+    base.connect()
+    base.disconnect()

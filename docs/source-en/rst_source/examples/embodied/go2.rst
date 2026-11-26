@@ -121,9 +121,19 @@ Setup and Run
 
       .. code-block:: bash
 
-         python -m pytest -q tests/e2e_tests/evaluations/test_go2_tracking.py
+         python -m pytest -q tests/e2e_tests/evaluations/test_go2.py
 
       On hardware, complete the on-site checks above first. In the Go2 hardware configuration, set ``interface`` to the robot NIC and ``enable_motion`` to true. Set ``env.eval.override_cfg.is_dummy=false`` to enable the SDK path. Independently verify that the first two components of ``rt/sportmodestate`` velocity measure forward and leftward body speed in m/s, and that positive yaw speed measures a left turn in rad/s. Record the source of that confirmation in ``env.eval.override_cfg.mapping_source``.
+
+      **4. Replay an Isaac Lab locomotion policy**
+
+      The evaluation configuration can load the Go2 checkpoint from the Isaac Lab training workflow and exercise its 235-value observation and twelve motor outputs with simulated inputs. Supply the checkpoint path when running:
+
+      .. code-block:: bash
+
+         bash evaluations/run_eval.sh realworld realworld_go2_policy rollout.model.model_path=./data/go2_abc/models/A/baseline.pt
+
+      Set the path to your prepared checkpoint. The policy task supports dummy and mock SDK inputs. Live deployment requires measured body velocity and the 187-point terrain scan, a verified 200 Hz motor loop, and on-site validation of control ownership and stopping.
 
 Visualization and Results
 -------------------------

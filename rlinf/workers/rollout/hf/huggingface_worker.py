@@ -624,6 +624,7 @@ class MultiStepRolloutWorker(Worker):
         if model_type in [
             SupportedModel.OPENPI,
             SupportedModel.PI0_FAST,
+            SupportedModel.GO2_POLICY,
             SupportedModel.EVO1,
             SupportedModel.MLP_POLICY,
             SupportedModel.GR00T,
@@ -639,7 +640,7 @@ class MultiStepRolloutWorker(Worker):
         ]:
             if self.enable_dagger:
                 kwargs = {"mode": "eval"}
-            elif model_type == SupportedModel.PI0_FAST:
+            elif model_type in (SupportedModel.PI0_FAST, SupportedModel.GO2_POLICY):
                 kwargs = dict(kwargs)
                 kwargs["mode"] = mode
             else:

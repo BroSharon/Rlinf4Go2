@@ -18,9 +18,14 @@ from rlinf.envs.real.registry import register_tasks
 
 from .base import Go2Env, Go2EnvConfig
 from .drive import Go2DriveEnv
+from .policy import Go2PolicyEnv
 from .tracking import Go2TrackingEnv
 
-TASKS = {"Go2DriveEnv-v1": Go2DriveEnv, "Go2TrackingEnv-v1": Go2TrackingEnv}
+TASKS = {
+    "Go2DriveEnv-v1": Go2DriveEnv,
+    "Go2TrackingEnv-v1": Go2TrackingEnv,
+    "Go2PolicyEnv-v1": Go2PolicyEnv,
+}
 _ENTRY_POINTS = [
     entry
     for task_id, cls in TASKS.items()
@@ -34,6 +39,7 @@ __all__ = [
     "Go2Env",
     "Go2EnvConfig",
     "Go2DriveEnv",
+    "Go2PolicyEnv",
     "Go2TrackingEnv",
     *_ENTRY_POINTS,
 ]

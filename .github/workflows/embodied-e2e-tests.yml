@@ -150,7 +150,7 @@ jobs:
         run: |
           unset PYTHONPATH
           source .venv/bin/activate
-          python -m pytest -q tests/e2e_tests/evaluations/test_go2_tracking.py
+          python -m pytest -q tests/e2e_tests/evaluations/test_go2.py
 
       - name: Xsquare-turtle2 SAC dummy test
         timeout-minutes: 20

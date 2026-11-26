@@ -1416,6 +1416,7 @@ _ROBOTS = ("franka", "dosw1", "gim_arm", "go2", "xsquare")
 EXPECTED_IDS = {
     "Go2DriveEnv-v1",
     "Go2TrackingEnv-v1",
+    "Go2PolicyEnv-v1",
     "FrankaEnv-v1",
     "PegInsertionEnv-v1",
     "FrankaBinRelocationEnv-v1",
@@ -6910,3 +6911,116 @@ def test_arx5_collection_preserves_pico_control_and_calibration_defaults(monkeyp
         assert reader.calibration_threshold == 0.5
         np.testing.assert_array_equal(reader.head_forward_axis, [0, 0, -1])
         np.testing.assert_array_equal(reader.base_position, [0, 0, 0])
+
+
+def test_go2_sim_policy_observation_and_motor_contract():
+    from rlinf.envs.real.go2.control import Go2Control, JointState, Perception
+
+    fixture = json.loads(
+        (_ROOT / "tests/fixtures/go2_control_reference.json").read_text()
+    )
+    frame = fixture["frame"]
+    control = Go2Control("A")
+    state = JointState(**frame["state"])
+    perception = Perception(**frame["perception"])
+    observation = control.observation(
+        state, perception, frame["command"], frame["time"]
+    )
+    result = control.step(state, fixture["policy_action"], frame["time"])
+    np.testing.assert_allclose(
+        observation, fixture["expected"]["observation"], atol=1e-6
+    )
+    np.testing.assert_allclose(control.scan_xy(), fixture["scan_xy"], atol=1e-7)
+    for key in ("target_q_sdk", "torque_sdk"):
+        np.testing.assert_allclose(result[key], fixture["expected"][key], atol=1e-6)
+    for tick in range(1, 4):
+        held = control.step(state, None, frame["time"] + tick * 0.005)
+        np.testing.assert_array_equal(held["target_q_sdk"], result["target_q_sdk"])
+        assert control.needs_action == (tick == 3)
+    control.step(state, fixture["policy_action"], frame["time"] + 0.02)
+    control.reset()
+    assert control.needs_action
+    np.testing.assert_array_equal(control.last_action, np.zeros(12))
+
+
+@pytest.mark.parametrize(
+    "invalid", ["short_terrain", "stale", "future", "nan_velocity"]
+)
+def test_go2_sim_policy_requires_fresh_measured_inputs(invalid):
+    from rlinf.envs.real.go2.control import Go2Control, JointState, Perception
+
+    fixture = json.loads(
+        (_ROOT / "tests/fixtures/go2_control_reference.json").read_text()
+    )
+    frame = fixture["frame"]
+    state = JointState(**frame["state"])
+    perception = Perception(**frame["perception"])
+    if invalid == "short_terrain":
+        perception = dataclasses.replace(perception, ground_z_w=[0.0] * 186)
+    elif invalid == "nan_velocity":
+        perception = dataclasses.replace(perception, base_lin_vel_b=[0.0, np.nan, 0.0])
+    elif invalid == "stale":
+        perception = dataclasses.replace(perception, timestamp=frame["time"] - 1)
+    else:
+        state = dataclasses.replace(state, timestamp=frame["time"] + 1)
+    with pytest.raises((ValueError, TimeoutError)):
+        Go2Control("A").observation(state, perception, frame["command"], frame["time"])
+
+
+def test_go2_policy_env_uses_policy_actions_and_stops_at_episode_boundary():
+    from rlinf.envs.real.env import RealWorldEnv
+
+    cfg = OmegaConf.load(_ROOT / "evaluations/realworld/realworld_go2_policy.yaml")
+    cfg = cfg.env.eval
+    cfg.max_episode_steps = cfg.max_steps_per_rollout_epoch = (
+        cfg.override_cfg.max_num_steps
+    ) = 2
+    env = RealWorldEnv(cfg, 1, 0, 1, worker_info=None)
+    actions = np.full((1, 1, 12), 0.125, dtype=np.float32)
+    try:
+        observations, _ = env.reset()
+        assert observations["states"].shape == (1, 235)
+        _, _, _, truncated, infos = env.chunk_step(actions)
+        assert not truncated.any()
+        observations, _, _, truncated, infos = env.chunk_step(actions)
+        assert truncated.tolist() == [[True]]
+        assert infos[-1]["episode"]["episode_len"].tolist() == [2]
+        np.testing.assert_allclose(observations[-1]["states"][0, 36:48], 0.125)
+    finally:
+        env.close()
+
+
+def test_go2_policy_env_rejects_real_sdk_before_connecting():
+    from rlinf.envs.real.go2.policy import Go2PolicyEnv
+
+    with pytest.raises(RuntimeError, match="requires the mock SDK"):
+        Go2PolicyEnv(
+            {
+                "is_dummy": False,
+                "max_num_steps": 1,
+                "task": "A",
+                "command": [0.1, 0.0, 0.0],
+            }
+        )
+
+
+def test_go2_sim_policy_cadence_and_task_b_action_bound():
+    from rlinf.envs.real.go2.control import Go2Control, JointState
+
+    state = JointState(
+        q=np.zeros(12),
+        dq=np.zeros(12),
+        quaternion_wxyz=[1, 0, 0, 0],
+        gyroscope_b=[0, 0, 0],
+        timestamp=1.0,
+    )
+    control = Go2Control("B")
+    with pytest.raises(ValueError, match="policy action"):
+        control.step(state, None, 1.0)
+    control.step(state, np.full(12, 101.0), 1.0)
+    np.testing.assert_array_equal(control.last_action, np.full(12, 100.0))
+    with pytest.raises(ValueError, match="between policy ticks"):
+        control.step(state, np.zeros(12), 1.005)
+    with pytest.raises(TimeoutError, match="motor cycles"):
+        control.step(state, None, 1.02)
+    assert control.steps == 1

@@ -59,6 +59,8 @@ class FakeGo2SDK:
         self.callback: Any = None
         self.sport_callback: Any = None
         self.publish_sport = True
+        self.motion_mode = ""
+        self.lowcmd_result = True
 
     def record(self, event: tuple[Any, ...]) -> None:
         """Keep SDK calls available to in-process and distributed assertions."""
@@ -114,8 +116,10 @@ class FakeGo2SDK:
                 if fake.stream_feedback:
 
                     def stream_state() -> None:
+                        tick = 1
                         while not self.shutdown.wait(0.01):
-                            callback(lowstate())
+                            tick += 1
+                            callback(lowstate(tick))
 
                     self.thread = threading.Thread(target=stream_state, daemon=True)
                     self.thread.start()
@@ -187,17 +191,59 @@ class FakeGo2SDK:
             def Crc(self, message):
                 return 42
 
+        class Publisher:
+            def __init__(self, topic, dtype):
+                fake.record(("publisher", topic))
+
+            def Init(self):
+                fake.record(("publisher_init",))
+
+            def Write(self, message, timeout=None):
+                fake.record(("lowcmd", [m.tau for m in message.motor_cmd], message.crc))
+                return fake.lowcmd_result
+
+            def Close(self):
+                fake.record(("publisher_close",))
+
+        class MotionSwitcher:
+            def SetTimeout(self, timeout):
+                pass
+
+            def Init(self):
+                pass
+
+            def CheckMode(self):
+                return 0, {"name": fake.motion_mode}
+
+        def lowcmd():
+            return SimpleNamespace(
+                head=[0, 0],
+                level_flag=0,
+                gpio=0,
+                crc=0,
+                motor_cmd=[
+                    SimpleNamespace(mode=0, q=0, dq=0, kp=0, kd=0, tau=0)
+                    for _ in range(20)
+                ],
+            )
+
         definitions = {
             "unitree_sdk2py.core.channel": {
                 "ChannelFactory": ChannelFactory,
                 "ChannelFactoryInitialize": initialize,
                 "Qos": object,
                 "ChannelSubscriber": Subscriber,
+                "ChannelPublisher": Publisher,
+            },
+            "unitree_sdk2py.idl.default": {"unitree_go_msg_dds__LowCmd_": lowcmd},
+            "unitree_sdk2py.comm.motion_switcher.motion_switcher_client": {
+                "MotionSwitcherClient": MotionSwitcher
             },
             "unitree_sdk2py.utils.crc": {"CRC": CRC},
             "unitree_sdk2py.go2.sport.sport_client": {"SportClient": Client},
             "unitree_sdk2py.idl.unitree_go.msg.dds_": {
                 "LowState_": SimpleNamespace,
+                "LowCmd_": SimpleNamespace,
                 "SportModeState_": SimpleNamespace,
             },
         }
