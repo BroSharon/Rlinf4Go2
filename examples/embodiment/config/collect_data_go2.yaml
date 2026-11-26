@@ -1,0 +1,60 @@
+defaults:
+  - _self_
+  - override hydra/job_logging: stdout
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    env:
+      node_group: go2
+      placement: 0
+  node_groups:
+    - label: go2
+      node_ranks: 0
+      hardware:
+        type: UnitreeGo2
+        configs:
+          - node_rank: 0
+            interface: eno1
+            enable_motion: true
+
+runner:
+  task_type: embodied
+  logger:
+    log_path: null
+  num_data_episodes: 1
+  count_truncated_episodes: true
+
+env:
+  group_name: EnvGroup
+  eval:
+    env_type: real
+    init_params:
+      id: Go2DriveEnv-v1
+    override_cfg:
+      max_num_steps: 20
+      handset_control_confirmed: false
+      step_frequency: 10
+    total_num_envs: 1
+    group_size: 1
+    seed: 0
+    max_episode_steps: null
+    use_fixed_reset_state_ids: false
+    auto_reset: false
+    ignore_terminations: false
+    video_cfg:
+      save_video: false
+    teleop: go2_handset
+    data_collection:
+      enabled: true
+      save_dir: ${runner.logger.log_path}/collected_data
+      export_format: pickle_episode
+      only_success: false
+      record_executed_actions: true
+      robot_type: unitree_go2
+      fps: 10

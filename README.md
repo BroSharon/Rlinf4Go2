@@ -1,17 +1,22 @@
 # Rlinf4Go2
+
 This project is one of the patches for integrating Unitree Go2 into the Rlinf framework. Its main purpose is to wrap the process of collecting Go2 motion trajectories within Rlinf, such that remote controller commands are routed through Rlinf before being sent to Go2.
 
-[中文使用说明](examples/embodiment/go2_sport/README.zh-CN.md)
+[中文使用说明](docs/source-zh/rst_source/examples/embodied/go2.rst)
 
-## Run and Review Go2 Recording
+## Run Go2 Collection
 
-Use the [Go2 guide](examples/embodiment/go2_sport/README.md) to check state reception, inspect joystick input, and record a trajectory. RLinf saves the velocity command and the states before and after each control step. The JSON report keeps SDK velocity feedback with host reception times.
+Follow the [Go2 guide](docs/source-en/rst_source/examples/embodied/go2.rst) to install SDK2, check state reception, and prepare the handset. Preview the collection configuration before connecting to the robot.
+
+```bash
+bash examples/embodiment/collect_data.sh collect_data_go2 --cfg job
+```
 
 | Location | Purpose |
 | --- | --- |
-| [examples/embodiment/go2_sport](examples/embodiment/go2_sport) | Command-line entry point and usage |
-| [rlinf/envs/real/go2](rlinf/envs/real/go2) | Drive environment and state/action spaces |
-| [Unitree mobility adapter](rlinf/robotics/parts/mobility/unitree_go2.py) | SDK2 state reception and velocity commands |
-| [Robotics tests](tests/unit_tests/test_robotics.py) | CPU checks with a mock Unitree SDK |
+| [Collection configuration](examples/embodiment/config/collect_data_go2.yaml) | Select Go2 handset recording through the standard collector |
+| [Handset adapter](rlinf/robotics/parts/teleop/go2_handset.py) | Convert stick positions to body velocity commands |
+| [Go2 environment](rlinf/envs/real/go2) | Dispatch commands and return robot state |
+| [Robotics tests](tests/unit_tests/test_robotics.py) | Check the saved commands and states with a mock SDK |
 
-The recording change is [commit 772cd4f](https://github.com/BroSharon/Rlinf4Go2/commit/772cd4f6692d49c75e4f0b4d8c77fac0be50f92e). Follow [RLinf #1948](https://github.com/RLinf/RLinf/pull/1948) for the upstream Go2 hardware interface. Hardware state reception and mock recording have been verified. Active handset recording still needs an on-site test.
+RLinf saves the executed velocity commands and observations as pickle episodes. Each step also stores SDK velocity feedback and handset samples with their host reception times. The Go2 hardware integration comes from [RLinf #1948](https://github.com/RLinf/RLinf/pull/1948). Active handset recording still needs an on-site test.

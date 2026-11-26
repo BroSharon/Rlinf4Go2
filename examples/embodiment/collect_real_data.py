@@ -36,6 +36,7 @@ selects ``replay_buffer`` and ``lerobot_dataset``.
 
 import os
 import time
+from pathlib import Path
 
 import hydra
 import numpy as np
@@ -66,16 +67,31 @@ class DataCollector(Worker):
         self.total_cnt = 0
         self.replay_buffer = None
         self._export_formats = self._selected_export_formats(cfg)
+        dc_cfg = cfg.env.eval.get("data_collection")
         override_cfg = cfg.env.eval.get("override_cfg", {})
         self.manual_episode_control_only = bool(
             override_cfg.get("manual_episode_control_only", False)
         )
+        self.count_truncated_episodes = cfg.runner.get(
+            "count_truncated_episodes", False
+        )
+        if self.count_truncated_episodes:
+            if (
+                self._export_formats != {"pickle_episode"}
+                or not dc_cfg.get("enabled", False)
+                or dc_cfg.get("only_success", False)
+            ):
+                raise ValueError(
+                    "Counting truncations requires write-all pickle_episode export."
+                )
+            (Path(self._save_root(cfg)) / "pickle_episode").mkdir(
+                parents=True, exist_ok=False
+            )
         self.env = self._build_env(cfg)
         # Read from the wrapped action space so GripperCloseEnv / dual-arm all just work.
         self.action_dim = int(self.env.action_space.shape[-1])
         self.replay_buffer = self._build_replay_buffer(cfg)
 
-        dc_cfg = cfg.env.eval.get("data_collection")
         fps = dc_cfg.get("fps") if dc_cfg else None
         self._target_step_period = 1.0 / float(fps) if fps else None
 
@@ -110,6 +126,7 @@ class DataCollector(Worker):
             finalize_interval=dc_cfg.get("finalize_interval", 100),
             resume=bool(dc_cfg.get("resume", False)),
             streaming=bool(dc_cfg.get("streaming", False)),
+            record_executed_actions=bool(dc_cfg.get("record_executed_actions", False)),
         )
         preexisting_episodes = int(getattr(env, "preexisting_episode_count", 0))
         # A resumed LeRobot shard may include failed episodes. Count old
@@ -383,20 +400,39 @@ class DataCollector(Worker):
                 save_episode, r_val, manual_done = self._should_save_episode(
                     reward, info
                 )
-                if save_episode:
+                recorded_truncation = (
+                    not save_episode
+                    and bool(truncated_tensor.any().item())
+                    and self.count_truncated_episodes
+                    and not any(
+                        np.asarray(info.get(flag, False)).any()
+                        for flag in (
+                            "recording_invalid",
+                            "episode_discarded",
+                            "fault_truncated",
+                        )
+                    )
+                )
+                if save_episode or recorded_truncation:
                     success_cnt += 1
+                if save_episode:
                     self.log_info(
                         f"Success (reward={r_val}, manual_done={manual_done}). "
                         f"Total: {success_cnt}/{self.num_data_episodes}"
                     )
                     self._commit_replay_episode(replay_rollout)
-                    progress_bar.update(1)
+                elif recorded_truncation:
+                    self.log_info(
+                        f"Recorded episode {success_cnt}/{self.num_data_episodes}."
+                    )
                 else:
                     self.log_info(
                         f"Episode ended (reward={r_val:.2f}). "
                         f"Discarded. Total success: {success_cnt}/{self.num_data_episodes}"
                     )
 
+                if save_episode or recorded_truncation:
+                    progress_bar.update(1)
                 reset_options = None
                 if success_cnt >= self.num_data_episodes:
                     reset_options = {"skip_wait_for_start": True}

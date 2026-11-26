@@ -1,7 +1,7 @@
 Go2 High-Level Control
 ======================
 
-Read Go2 EDU state and check six directions through the original Unitree controller. The archived 2026-11-16 runs have operator-confirmed motion and stopping. This version has passed a hardware state reception check. Active handset recording still needs an on-site test.
+The Gymnasium task ``Go2DriveEnv-v1`` reads joint and IMU data from ``rt/lowstate`` by default. For a direction check, RLinf sends a body velocity command through Unitree's ``SportClient``. The Go2's onboard controller handles gait and joint control.
 
 Overview
 --------
@@ -31,11 +31,15 @@ Tasks
    :header-rows: 1
 
    * - Check
-     - Result
+     - Requested action
    * - Read-only
      - State samples without motion commands.
-   * - One direction
-     - Forward, backward, left, right, turn-left, or turn-right, followed by a stop request.
+   * - ``forward`` / ``backward``
+     - Move forward or backward at 0.3 m/s.
+   * - ``left`` / ``right``
+     - Move sideways at 0.3 m/s.
+   * - ``turn_left`` / ``turn_right``
+     - Turn left or right at 0.5 rad/s.
 
 Observation and Action
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -48,56 +52,76 @@ Observation and Action
    * - Observation
      - Orientation, angular velocity, twelve joint positions and velocities, battery voltage, and four raw foot-force readings.
    * - Action
-     - Body velocity in m/s, m/s, rad/s, bounded by absolute values of 0.3, 0.3, and 0.5.
+     - Forward speed, leftward speed, and left turn rate, in that order. The respective limits are ±0.3 m/s, ±0.3 m/s, and ±0.5 rad/s.
    * - Reward
      - Zero. This check does not train a policy.
 
-Installation
-------------
+Setup and Run
+-------------
 
-Prepare a Python 3.11 RLinf environment using :doc:`Installation </rst_source/start/installation>`. From the repository root, install the optional SDK at the revision used for the hardware checks:
+**Prerequisites:** Follow the :doc:`installation guide </rst_source/start/installation>` to prepare the Linux controller. Use a dedicated network interface connected to the Go2 EDU.
+
+.. tab-set::
+
+   .. tab-item:: Go2 EDU
+
+      **1. Install the SDK**
+
+      On the Linux controller, follow the `Unitree SDK instructions <https://github.com/unitreerobotics/unitree_sdk2_python/tree/814556d15970dd2ecf1c9984e845ca02ab07e206>`_ to install native CycloneDDS 0.10.x and export ``CYCLONEDDS_HOME`` in your shell. The Python 3.11 bindings build against this library. From the RLinf repository root, install the SDK in the same shell:
+
+      .. code-block:: bash
+
+         bash requirements/install.sh embodied --env go2_sport
+         source .venv/bin/activate
+
+      Configure the network interface as described in the SDK instructions. The controller computer needs no GPU or policy weights.
+
+      **2. Check state and motion**
+
+      Replace ``<interface>`` with the network interface attached to the Go2. Preview a command without opening SDK channels:
+
+      .. code-block:: bash
+
+         python -m toolkits.realworld_check.check_go2_sport --interface <interface> --direction forward --dry-run
+
+      The plan reports ``hardware_access: false``. Check state reception separately:
+
+      .. code-block:: bash
+
+         python -m toolkits.realworld_check.check_go2_sport --interface <interface> --readonly
+
+      This writes ten state-validation results to ``outputs/go2_sport/``. To inspect a single checksum-verified joint and IMU sample from ``rt/lowstate``, run the read-only subscriber in a fresh process.
+
+      .. code-block:: bash
+
+         python -m toolkits.realworld_check.check_go2_lowstate --interface <interface>
+
+      For motion, keep the original controller active, verify standing posture and clear space, and have the remote ready on site. Close other motion programs before running one direction:
+
+      .. code-block:: bash
+
+         python -m toolkits.realworld_check.check_go2_sport --interface <interface> --direction forward
+
+      Choose one of the six direction names above and enter ``GO`` after the on-site checks. The check sends the command at 10 Hz for one second, then requests a stop. Use ``--seconds 2`` for two seconds or ``--output <path>`` to choose a new report file.
+
+      .. warning::
+
+         A stop request or a low SDK velocity estimate does not establish physical rest. Observe the robot directly and use the remote if motion continues. Network loss or process failure can defeat software stop requests.
+
+Record Handset Demonstrations
+-----------------------------
+
+Use the standard collection command after checking state reception. Verify on site that the original handset still sends stick readings with native stick driving isolated. Check the stick directions and test an independent stop. Center both sticks before starting each episode.
 
 .. code-block:: bash
 
-   uv pip install -r requirements/embodied/envs/go2_sport.txt
+   bash examples/embodiment/collect_data.sh collect_data_go2 env.eval.override_cfg.handset_control_confirmed=true
 
-Follow the pinned `SDK installation guide <https://github.com/unitreerobotics/unitree_sdk2_python/tree/814556d15970dd2ecf1c9984e845ca02ab07e206>`_ for CycloneDDS prerequisites and robot networking. The controller computer needs no GPU or policy weights.
+Set the network interface in the Go2 collection config. The default run records one two-second episode at 10 Hz. The collector stops and closes the robot if handset input or SDK speed feedback expires, or if it receives a handset button press.
 
-Run It
-------
-
-Replace ``<interface>`` with the network interface attached to the Go2. Preview a command without opening SDK channels:
-
-.. code-block:: bash
-
-   python -m examples.embodiment.go2_sport.run --interface <interface> --direction forward --dry-run
-
-The plan reports ``hardware_access: false``. Check state reception separately:
-
-.. code-block:: bash
-
-   python -m examples.embodiment.go2_sport.run --interface <interface> --readonly
-
-This writes ten state-validation results to ``outputs/go2_sport/``. For motion, keep the original controller active, verify standing posture and clear space, and have the remote ready on site. Close other motion programs before running one direction:
-
-.. code-block:: bash
-
-   python -m examples.embodiment.go2_sport.run --interface <interface> --direction forward
-
-Enter ``GO`` only after the on-site checks. Choose ``forward``, ``backward``, ``left``, ``right``, ``turn_left``, or ``turn_right``. Each invocation checks one direction for one second at 10 Hz; ``--seconds 2`` selects two seconds. ``--output <path>`` selects a fresh report path and refuses to overwrite a file.
-
-.. warning::
-
-   A stop request or a low SDK velocity estimate does not establish physical rest. Observe the robot directly and use the remote if motion continues. Network loss or process failure can defeat software stop requests.
-
-Record a Handset Trajectory
----------------------------
-
-The `Go2 example guide <https://github.com/BroSharon/Rlinf4Go2/blob/main/examples/embodiment/go2_sport/README.md#record-a-handset-demonstration>`_ describes the on-site checks for handset control. Use ``--inspect-handset`` to check the input and mapping while RLinf motion is disabled. With ``--handset`` and ``--record-dir``, a completed one-second run saves 10 velocity commands and 11 observations in a pickle episode. The JSON report stores the joystick samples and SDK velocity feedback.
+Each pickle in the run's collected data directory holds 20 executed velocity commands and 21 observations. The state vector contains battery voltage, foot force, angular velocity, joint positions, joint velocities, and orientation, in that order. Each step's info holds the raw stick axes and estimated speed, with host reception times. A completed time-limited episode counts toward the collection target without a task success label.
 
 Visualization and Results
 -------------------------
 
-Reports separate interface errors, SDK stop estimates, and operator confirmation. The command never marks a physical test as passed automatically. Quantitative distance, turn angle, and stopping-distance acceptance remains incomplete.
-
-The `historical six-direction summary <https://github.com/QuincyQAQ/RLinf/blob/a253e5e657299103fa5e766c24b0f05eb5fb854f/artifacts/go2_sport_20261116/basic_control_acceptance_20261116.json>`_ and its sibling reports preserve the original evidence. The source map and migration scope are in ``examples/embodiment/go2_sport/README.md``.
+The report records interface errors and the SDK velocity estimate after the stop request. Record your observation of the motion and stop separately. Measure travel distance, turn angle, and stopping distance separately if your application requires them.

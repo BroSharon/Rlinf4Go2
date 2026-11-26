@@ -170,6 +170,7 @@ class CollectEpisode(gym.Wrapper):
             not, with the episode-level ``is_success`` flag stamped at episode
             end, so ``only_success`` filtering does not apply in this mode.
             Defaults to False.
+        record_executed_actions: Use teleoperator overrides for pickle actions.
     """
 
     def __init__(
@@ -186,6 +187,7 @@ class CollectEpisode(gym.Wrapper):
         finalize_interval: int = 100,
         resume: bool = False,
         streaming: bool = False,
+        record_executed_actions: bool = False,
     ):
         if isinstance(env, gym.Env):
             super().__init__(env)
@@ -214,6 +216,7 @@ class CollectEpisode(gym.Wrapper):
         self.only_success = only_success
         self.finalize_interval = finalize_interval
         self.streaming = streaming
+        self.record_executed_actions = record_executed_actions
 
         # Streaming-mode per-env episode state. Only one previous observation
         # (the pre-action frame) is kept per env; everything else is written
@@ -571,7 +574,15 @@ class CollectEpisode(gym.Wrapper):
             else:
                 buf = self._buffers[env_idx]
                 buf["observations"].append(env_obs)
-                buf["actions"].append(self._slice_copy(action, env_idx))
+                env_action = self._slice_copy(action, env_idx)
+                if (
+                    self.export_format == "pickle_episode"
+                    and self.record_executed_actions
+                ):
+                    env_action, _ = LeRobotFrame._executed_action(
+                        np.asarray(env_action), env_info, np.size(env_action)
+                    )
+                buf["actions"].append(env_action)
                 buf["rewards"].append(self._slice_copy(reward, env_idx))
                 buf["terminated"].append(self._slice_copy(terminated, env_idx))
                 buf["truncated"].append(self._slice_copy(truncated, env_idx))

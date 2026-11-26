@@ -20,10 +20,16 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 
-def lowstate() -> SimpleNamespace:
+def lowstate(tick: int = 1) -> SimpleNamespace:
     """Return deterministic Go2 lowstate data with twelve joints."""
     return SimpleNamespace(
-        imu_state=SimpleNamespace(rpy=[0.1, 0.2, 0.3], gyroscope=[1, 2, 3]),
+        tick=tick,
+        crc=42,
+        imu_state=SimpleNamespace(
+            quaternion=[1.0, 0.0, 0.0, 0.0],
+            rpy=[0.1, 0.2, 0.3],
+            gyroscope=[1, 2, 3],
+        ),
         motor_state=[SimpleNamespace(q=i / 10, dq=i / 20) for i in range(12)],
         power_v=31.52,
         foot_force=[40, 0, 0, 0],
@@ -39,6 +45,7 @@ class FakeGo2SDK:
         self.move_code = 0
         self.move_error = False
         self.events: list[tuple[Any, ...]] = []
+        self.writes: list[tuple[object, str, float]] = []
         self.stopped = threading.Event()
         self.close_entered = threading.Event()
         self.close_release = threading.Event()
@@ -66,11 +73,11 @@ class FakeGo2SDK:
                     self.sport_callback(
                         SimpleNamespace(velocity=[0.0, 0.0, 0.0], yaw_speed=0.0)
                     )
-                wireless_callback = self.wireless_callback
-                if wireless_callback is not None:
-                    sample = self.wireless_input()
-                    if sample is not None:
-                        wireless_callback(sample)
+                callback = self.wireless_callback
+                if callback is not None:
+                    message = self.wireless_input()
+                    if message is not None:
+                        callback(message)
 
         thread = threading.Thread(target=publish, daemon=True)
         thread.start()
@@ -90,11 +97,11 @@ class FakeGo2SDK:
                 fake.events.append(("subscribe", topic))
 
             def Init(self, callback: Any, queue_len: int) -> None:
-                if self.topic == "rt/sportmodestate":
-                    fake.sport_callback = callback
-                    return
                 if self.topic == "rt/wirelesscontroller":
                     fake.wireless_callback = callback
+                    return
+                if self.topic == "rt/sportmodestate":
+                    fake.sport_callback = callback
                     return
                 fake.callback = callback
                 if fake.publish_initial:
@@ -116,33 +123,55 @@ class FakeGo2SDK:
 
         class Client:
             def __init__(self) -> None:
+                self.writer = object()
                 fake.events.append(("client",))
 
             def SetTimeout(self, timeout: float) -> None:
-                fake.events.append(("timeout", timeout))
+                self.timeout = timeout
 
             def Init(self) -> None:
                 fake.events.append(("init",))
 
             def StopMove(self) -> int:
+                fake.writes.append((self.writer, "stop", self.timeout))
                 fake.events.append(("stop",))
                 fake.stopped.set()
                 return fake.stop_code
 
             def Move(self, vx: float, vy: float, vyaw: float) -> int:
+                fake.writes.append((self.writer, "move", self.timeout))
                 fake.events.append(("move", vx, vy, vyaw))
                 if fake.move_error:
                     raise OSError("Simulated DDS send failure")
                 return fake.move_code
 
+        class ChannelFactory:
+            __initialized = False
+            __qos = None
+
+            def Init(self, domain, interface, qos=None):
+                cls = type(self)
+                if not cls.__initialized:
+                    fake.events.append(("dds", domain, interface))
+                    cls.__qos = qos
+                    cls.__initialized = True
+                return True
+
         def initialize(domain: int, interface: str) -> None:
-            fake.events.append(("dds", domain, interface))
+            ChannelFactory().Init(domain, interface)
+
+        class CRC:
+            def Crc(self, message):
+                return 42
 
         definitions = {
             "unitree_sdk2py.core.channel": {
+                "ChannelFactory": ChannelFactory,
                 "ChannelFactoryInitialize": initialize,
+                "Qos": object,
                 "ChannelSubscriber": Subscriber,
             },
+            "unitree_sdk2py.utils.crc": {"CRC": CRC},
             "unitree_sdk2py.go2.sport.sport_client": {"SportClient": Client},
             "unitree_sdk2py.idl.unitree_go.msg.dds_": {
                 "LowState_": SimpleNamespace,

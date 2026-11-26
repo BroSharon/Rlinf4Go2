@@ -14,9 +14,11 @@
 
 """Registered Go2 high-level drive task."""
 
-from typing import Any
+from typing import Any, Mapping
 
+from rlinf.envs.real.wrappers.teleop.config import resolve_teleop_devices
 from rlinf.robotics import Go2Config, RobotInfo
+from rlinf.robotics.actions import ActionKind, ActionPart
 from rlinf.scheduler import WorkerInfo
 
 from .base import Go2Env, Go2EnvConfig
@@ -24,6 +26,40 @@ from .base import Go2Env, Go2EnvConfig
 
 class Go2DriveEnv(Go2Env):
     """Exercise state reception and body velocity commands without training."""
+
+    TELEOP = ("go2_handset",)
+
+    @staticmethod
+    def action_parts() -> tuple[ActionPart, ...]:
+        """Describe the planar Go2 velocity action."""
+        return (ActionPart("base", 3, ActionKind.BASE_VELOCITY),)
+
+    @classmethod
+    def validate_env_config(
+        cls, override_cfg: Mapping[str, Any], env_cfg: Mapping[str, Any]
+    ) -> list[Any]:
+        """Check the stop boundary and teleop selection before opening DDS."""
+        outer = env_cfg.get("max_episode_steps")
+        inner = override_cfg.get("max_num_steps", Go2EnvConfig.max_num_steps)
+        if outer is not None and isinstance(inner, int) and outer < inner:
+            raise ValueError(
+                f"Go2 max_episode_steps={outer} ends before the stop at "
+                f"max_num_steps={inner}. Set max_episode_steps to null or at "
+                "least max_num_steps."
+            )
+        devices = resolve_teleop_devices(
+            env_cfg, supported=cls.TELEOP, default=cls.TELEOP_DEFAULT
+        )
+        if (
+            devices
+            and not override_cfg.get("is_dummy", False)
+            and override_cfg.get("handset_control_confirmed") is not True
+        ):
+            raise ValueError(
+                "Confirm exclusive SDK control, centered sticks and an independent "
+                "stop on site before setting env.eval.override_cfg.handset_control_confirmed=true."
+            )
+        return devices
 
     def __init__(
         self,

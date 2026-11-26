@@ -28,6 +28,7 @@ _MODULES = (
     ".gello",
     ".gello_joint",
     ".glove",
+    ".go2_handset",
     ".pico",
     ".so101_leader",
     ".spacemouse",
