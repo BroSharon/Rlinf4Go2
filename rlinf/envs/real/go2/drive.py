@@ -18,6 +18,7 @@ from typing import Any, Mapping
 
 from rlinf.envs.real.wrappers.teleop.config import resolve_teleop_devices
 from rlinf.robotics import Go2Config, RobotInfo
+from rlinf.robotics.actions import ActionKind, ActionPart
 from rlinf.scheduler import WorkerInfo
 
 from .base import Go2Env, Go2EnvConfig
@@ -25,6 +26,13 @@ from .base import Go2Env, Go2EnvConfig
 
 class Go2DriveEnv(Go2Env):
     """Exercise state reception and body velocity commands without training."""
+
+    TELEOP = ("go2_handset",)
+
+    @staticmethod
+    def action_parts() -> tuple[ActionPart, ...]:
+        """Describe the planar Go2 velocity action."""
+        return (ActionPart("base", 3, ActionKind.BASE_VELOCITY),)
 
     @classmethod
     def validate_env_config(
@@ -39,9 +47,19 @@ class Go2DriveEnv(Go2Env):
                 f"max_num_steps={inner}. Set max_episode_steps to null or at "
                 "least max_num_steps."
             )
-        return resolve_teleop_devices(
+        devices = resolve_teleop_devices(
             env_cfg, supported=cls.TELEOP, default=cls.TELEOP_DEFAULT
         )
+        if (
+            devices
+            and not override_cfg.get("is_dummy", False)
+            and override_cfg.get("handset_control_confirmed") is not True
+        ):
+            raise ValueError(
+                "Confirm exclusive SDK control, centered sticks and an independent "
+                "stop on site before setting env.eval.override_cfg.handset_control_confirmed=true."
+            )
+        return devices
 
     def __init__(
         self,

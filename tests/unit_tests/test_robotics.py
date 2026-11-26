@@ -10126,3 +10126,108 @@ def test_go2_sport_conflicts_only_include_potential_motion_commands(
     )
     monkeypatch.setattr(run.os, "getpid", lambda: 100)
     assert sorted(run.competing_processes()) == [23, 24]
+
+
+@pytest.mark.parametrize("stop_input", [None, "button", "stale", "nonneutral"])
+def test_go2_handset_recording(go2_sdk, monkeypatch, tmp_path, stop_input):
+    from omegaconf import OmegaConf
+    from robot_mocks.unitree_go2 import lowstate
+
+    from rlinf.envs.real.env import RealWorldEnv
+    from rlinf.envs.wrappers import CollectEpisode
+    from rlinf.robotics import Go2Config, RobotDiscovery
+
+    path = Path(__file__).resolve().parents[2]
+    cfg = OmegaConf.load(
+        path / "examples/embodiment/config/collect_data_go2.yaml"
+    ).env.eval
+    cfg.override_cfg.max_num_steps = 5
+    cfg.override_cfg.handset_control_confirmed = True
+
+    hardware = Go2Config(node_rank=0, interface="test0", enable_motion=True)
+    info = (
+        RobotDiscovery.registry["UnitreeGo2"]
+        .discovery_cls.enumerate(0, [hardware])
+        .infos[0]
+    )
+    worker = SimpleNamespace(hardware_infos=[info], rank=0, cluster_node_rank=0)
+    stop_at_reset = None
+
+    def joystick():
+        n_stops = go2_sdk.events.count(("stop",))
+        n_moves = sum(e[0] == "move" for e in go2_sdk.events)
+        if n_moves and stop_input == "stale":
+            return None
+        reset = stop_at_reset
+        episode_started = reset is not None and n_stops > reset
+        ly = (0.4 if n_moves % 2 == 0 else -0.6) if episode_started else 0
+        if stop_input == "nonneutral":
+            ly = 0.5
+        return SimpleNamespace(
+            lx=0, ly=ly, rx=0, ry=0, keys=int(bool(n_moves) and stop_input == "button")
+        )
+
+    def state_echo():
+        sample = lowstate()
+        sample.imu_state.rpy[0] = sum(e[1] for e in go2_sdk.events if e[0] == "move")
+        return sample
+
+    monkeypatch.setattr("robot_mocks.unitree_go2.lowstate", state_echo)
+    go2_sdk.wireless_input = joystick
+    with go2_sdk.streaming():
+        env = CollectEpisode(
+            RealWorldEnv(cfg, 1, 0, 1, worker),
+            save_dir=str(tmp_path),
+            record_executed_actions=True,
+        )
+
+        def run_episode():
+            nonlocal stop_at_reset
+            env.reset()
+            stop_at_reset = go2_sdk.events.count(("stop",))
+            for step in range(5):
+                _, _, terminated, truncated, _ = env.step(np.full((1, 3), 0.1))
+                assert not terminated.any()
+                assert truncated.any().item() == (step == 4)
+            stop_at_reset = None
+
+        try:
+            if stop_input:
+                expected = {
+                    "button": "button pressed",
+                    "stale": "expired",
+                    "nonneutral": "Center both",
+                }
+                with pytest.raises(
+                    (ValueError, RuntimeError, TimeoutError), match=expected[stop_input]
+                ):
+                    run_episode()
+            else:
+                run_episode()
+                run_episode()
+        finally:
+            env.close()
+    assert ("stop",) in go2_sdk.events
+    assert ("wireless_close",) in go2_sdk.events
+    assert ("sport_close",) in go2_sdk.events
+    assert go2_sdk.events[-1] == ("close",)
+    files = sorted(tmp_path.rglob("*.pkl"))
+    if stop_input:
+        assert not files
+        return
+    assert len(files) == 2
+    moves = [e[1:] for e in go2_sdk.events if e[0] == "move"]
+    assert len(moves) == 8
+    for i, path in enumerate(files):
+        with path.open("rb") as stream:
+            episode = pickle.load(stream)
+        actions = np.stack(episode["actions"])
+        np.testing.assert_array_equal(actions, [(0, 0, 0), *moves[4 * i : 4 * (i + 1)]])
+        states = np.stack([obs["states"] for obs in episode["observations"]])
+        assert states.shape == (6, 35)
+        np.testing.assert_allclose(states[:, 0], np.float32(31.52))
+        np.testing.assert_allclose(np.diff(states[:, 32]), actions[:, 0], atol=1e-6)
+        assert episode["truncated"] == [False] * 5 + [True]
+        assert not episode["success"]
+        for info in episode["infos"][1:]:
+            np.testing.assert_array_equal(info["go2_sdk_velocity"], [0, 0, 0])

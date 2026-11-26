@@ -108,6 +108,19 @@ Setup and Run
 
          A stop request or a low SDK velocity estimate does not establish physical rest. Observe the robot directly and use the remote if motion continues. Network loss or process failure can defeat software stop requests.
 
+Record Handset Demonstrations
+-----------------------------
+
+Use the standard collection command after checking state reception. Verify on site that the original handset still sends stick readings with native stick driving isolated. Check the stick directions and test an independent stop. Center both sticks before starting each episode.
+
+.. code-block:: bash
+
+   bash examples/embodiment/collect_data.sh collect_data_go2 env.eval.override_cfg.handset_control_confirmed=true
+
+Set the network interface in the Go2 collection config. The default run records one two-second episode at 10 Hz. The collector stops and closes the robot if handset input or SDK speed feedback expires, or if it receives a handset button press.
+
+Each pickle in the run's collected data directory holds 20 executed velocity commands and 21 observations. The state vector contains battery voltage, foot force, angular velocity, joint positions, joint velocities, and orientation, in that order. Each step's info holds the raw stick axes and estimated speed, with host reception times. A completed time-limited episode counts toward the collection target without a task success label.
+
 Visualization and Results
 -------------------------
 

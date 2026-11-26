@@ -34,6 +34,7 @@ class Go2EnvConfig:
     is_dummy: bool = False
     step_frequency: float = 10.0
     max_num_steps: int = 20
+    handset_control_confirmed: bool = False
 
 
 class Go2Env(gym.Env):
@@ -87,7 +88,17 @@ class Go2Env(gym.Env):
         )
         if not config.is_dummy:
             node_rank = self.hardware.node_rank
-            if worker_info is None:
+            if config.handset_control_confirmed:
+                if (
+                    worker_info is not None
+                    and worker_info.cluster_node_rank != node_rank
+                ):
+                    raise ValueError(
+                        "Place Go2 handset collection on the robot's hardware node."
+                    )
+                # The handset and mobility adapter share this worker's DDS factory.
+                node_rank = None
+            elif worker_info is None:
                 node_rank = None
             self.robot = Go2Robot.build(
                 interface=self.hardware.interface,
