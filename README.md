@@ -1,3 +1,7 @@
+## Branch Overview
+
+This branch contains **PR2**, a Go2 Sport velocity tracking evaluation. The standard RLinf evaluator sends fixed body velocity commands and compares them with SDK2 speed estimates. The results include per-axis error and feedback coverage. [Evaluation guide](docs/source-en/rst_source/examples/embodied/go2.rst)
+
 <div align="center">
   <img src="https://raw.githubusercontent.com/RLinf/misc/main/pic/logo_white.svg" alt="RLinf-logo" width="600"/>
 </div>
