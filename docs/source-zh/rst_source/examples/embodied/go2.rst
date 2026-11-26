@@ -1,7 +1,7 @@
 Go2 高层运动控制
 ================
 
-读取 Go2 EDU 状态，并通过宇树原厂控制器检查六个运动方向。2026-11-16 的归档实验已获操作者现场确认运动和停稳；迁移版本已做离线回归检查，尚待重新验证真机。
+读取 Go2 EDU 状态，并通过宇树原厂控制器检查六个运动方向。2026-11-16 的归档实验已获操作者现场确认运动和停稳。当前版本已通过真机状态接收检查，手柄主动录制仍待现场验证。
 
 概览
 ----
@@ -90,11 +90,14 @@ CycloneDDS 依赖和机器人网络配置见固定版本的 `SDK 安装说明 <h
 
    停止请求和 SDK 低速估计均不能证明物理停稳。请直接观察机器人，运动未停止就使用遥控器。网络断开或进程故障可能导致软件无法请求停止。
 
+录制手柄轨迹
+------------
+
+启用手柄控制前，请按 `Go2 示例说明 <https://github.com/BroSharon/Rlinf4Go2/blob/main/examples/embodiment/go2_sport/README.zh-CN.md>`_ 完成现场检查。先用 ``--inspect-handset`` 在 RLinf 不下发运动指令时核对摇杆方向。设置 ``--handset`` 和 ``--record-dir`` 后，完整运行 1 秒会生成一份 pickle 轨迹，包含 10 条速度指令和 11 帧观测。JSON 报告会单独保存摇杆输入和 SDK 速度反馈。
+
 可视化与结果
 ------------
 
 日志分别记录接口错误、SDK 停止估计和操作者确认；程序不会自动判定真机测试通过。距离、转角和停止距离的量化验收尚未完成。
 
 历史六方向汇总见 `验收记录 <https://github.com/QuincyQAQ/RLinf/blob/a253e5e657299103fa5e766c24b0f05eb5fb854f/artifacts/go2_sport_20261116/basic_control_acceptance_20261116.json>`_，同目录保留原始报告。代码位置和迁移范围见 ``examples/embodiment/go2_sport/README.zh-CN.md``。
-
-ABC policy 使用独立的 12 关节控制链路，说明见 ``examples/embodiment/go2_abc/MOTION.zh-CN.md``。六方向归档不代表该链路已获真机验证。

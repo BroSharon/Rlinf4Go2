@@ -63,10 +63,6 @@ python -m examples.embodiment.go2_sport.run --interface eno1 --handset --seconds
 PYTHONPATH=.:tests:tests/unit_tests python -m pytest -q tests/unit_tests/test_robotics.py -k go2_sport_recording_round_trip
 ```
 
-## 与 ABC 运控的关系
-
-本目录发送三维机身速度指令，不加载训练权重。[go2_abc](../go2_abc/MOTION.zh-CN.md) 则加载 ABC policy，输出 12 关节动作并换算电机力矩；其真机验证单独记录。
-
 ## Limitations
 
 六方向归档属于现场功能确认，距离、转角和停止距离的量化验收尚未完成。SDK 速度估计与停止请求均不能代替现场观察；进程退出、网络断开等情况下仍需独立停止手段。环境奖励为零，尚未提供真机强化学习任务。

@@ -63,10 +63,6 @@ To verify both input modes on CPU, run the round-trip test from the repository r
 PYTHONPATH=.:tests:tests/unit_tests python -m pytest -q tests/unit_tests/test_robotics.py -k go2_sport_recording_round_trip
 ```
 
-## Relationship to ABC Control
-
-This example sends three body velocity values without loading policy weights. [go2_abc](../go2_abc/MOTION.md) loads an ABC policy, produces twelve joint actions, and converts them to motor torque. Its hardware validation is tracked separately.
-
 ## Limitations
 
 The archive records operator-confirmed functionality. Quantitative distance, angle, and stopping-distance acceptance remains incomplete. SDK velocity estimates and stop requests do not replace direct observation; process exit and network loss require an independent stop mechanism. The environment returns zero reward and does not provide a real-robot RL task.

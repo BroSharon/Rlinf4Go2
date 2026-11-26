@@ -1,7 +1,7 @@
 Go2 High-Level Control
 ======================
 
-Read Go2 EDU state and check six directions through the original Unitree controller. The archived 2026-11-16 runs have operator-confirmed motion and stopping; this migrated version has offline regression coverage and awaits a hardware retest.
+Read Go2 EDU state and check six directions through the original Unitree controller. The archived 2026-11-16 runs have operator-confirmed motion and stopping. This version has passed a hardware state reception check. Active handset recording still needs an on-site test.
 
 Overview
 --------
@@ -90,11 +90,14 @@ Enter ``GO`` only after the on-site checks. Choose ``forward``, ``backward``, ``
 
    A stop request or a low SDK velocity estimate does not establish physical rest. Observe the robot directly and use the remote if motion continues. Network loss or process failure can defeat software stop requests.
 
+Record a Handset Trajectory
+---------------------------
+
+The `Go2 example guide <https://github.com/BroSharon/Rlinf4Go2/blob/main/examples/embodiment/go2_sport/README.md#record-a-handset-demonstration>`_ describes the on-site checks for handset control. Use ``--inspect-handset`` to check the input and mapping while RLinf motion is disabled. With ``--handset`` and ``--record-dir``, a completed one-second run saves 10 velocity commands and 11 observations in a pickle episode. The JSON report stores the joystick samples and SDK velocity feedback.
+
 Visualization and Results
 -------------------------
 
 Reports separate interface errors, SDK stop estimates, and operator confirmation. The command never marks a physical test as passed automatically. Quantitative distance, turn angle, and stopping-distance acceptance remains incomplete.
 
 The `historical six-direction summary <https://github.com/QuincyQAQ/RLinf/blob/a253e5e657299103fa5e766c24b0f05eb5fb854f/artifacts/go2_sport_20261116/basic_control_acceptance_20261116.json>`_ and its sibling reports preserve the original evidence. The source map and migration scope are in ``examples/embodiment/go2_sport/README.md``.
-
-ABC policy deployment uses a separate twelve-joint control path described in ``examples/embodiment/go2_abc/MOTION.md``. The six-direction archive does not validate that path.
