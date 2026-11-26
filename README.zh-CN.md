@@ -1,3 +1,9 @@
+## 分支说明
+
+这里保留了 **PR1 的早期原型**。Go2 Sport 独立脚本会记录三维速度指令和机器人状态。[原型使用说明](examples/embodiment/go2_sport/README.zh-CN.md)
+
+新版 PR1 已接入 RLinf 的标准采集入口。[查看当前 PR1](https://github.com/BroSharon/Rlinf4Go2/tree/main)
+
 <div align="center">
   <img src="https://github.com/RLinf/misc/raw/main/pic/logo_white.svg" alt="RLinf-logo" width="600"/>
 </div>

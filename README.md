@@ -1,3 +1,9 @@
+## Branch Overview
+
+This branch preserves the early **PR1** prototype. Its standalone Go2 Sport script records three-axis body velocity commands and robot observations. [Prototype guide](examples/embodiment/go2_sport/README.md)
+
+The current PR1 runs through RLinf's standard collection entry point. [Current PR1](https://github.com/BroSharon/Rlinf4Go2/tree/main)
+
 <div align="center">
   <img src="https://github.com/RLinf/misc/raw/main/pic/logo_white.svg" alt="RLinf-logo" width="600"/>
 </div>
