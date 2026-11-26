@@ -1,6 +1,6 @@
 ## 分支说明
 
-这是 **PR2 的速度跟踪评估**。RLinf 下发固定的机身速度指令，再对照宇树 SDK2 的速度估计，汇报逐轴误差和反馈覆盖率。[评估说明](docs/source-zh/rst_source/examples/embodied/go2.rst)
+这是 **PR3 的速度跟踪评估**。RLinf 下发固定的机身速度指令，再对照宇树 SDK2 的速度估计，汇报逐轴误差和反馈覆盖率。[评估说明](docs/source-zh/rst_source/examples/embodied/go2.rst)
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/RLinf/misc/main/pic/logo_white.svg" alt="RLinf-logo" width="600"/>
