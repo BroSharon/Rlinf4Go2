@@ -1,6 +1,6 @@
 ## 分支说明
 
-这里是 **Go2 仿真到真机的策略回放原型**。可以用 Isaac Lab 训练所得的 checkpoint，在 dummy 或 mock SDK 模式下检查观测和关节指令。真机部署仍待现场验证。[策略回放说明](docs/source-zh/rst_source/examples/embodied/go2.rst)
+这是 **PR2 的 Go2 仿真到真机策略回放原型**。可以用 Isaac Lab 训练所得的 checkpoint，在 dummy 或 mock SDK 模式下检查观测和关节指令。真机部署仍待现场验证。[策略回放说明](docs/source-zh/rst_source/examples/embodied/go2.rst)
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/RLinf/misc/main/pic/logo_white.svg" alt="RLinf-logo" width="600"/>
