@@ -1,3 +1,7 @@
+## Branch Overview
+
+This branch contains a **sim-to-real policy replay prototype** for Go2. It uses an Isaac Lab checkpoint to verify the observation and joint command pipeline with dummy or mock SDK inputs. Hardware deployment still needs on-site validation. [Policy replay guide](docs/source-en/rst_source/examples/embodied/go2.rst)
+
 <div align="center">
   <img src="https://raw.githubusercontent.com/RLinf/misc/main/pic/logo_white.svg" alt="RLinf-logo" width="600"/>
 </div>
