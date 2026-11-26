@@ -14,9 +14,11 @@
 
 """Exclusive access to SDK2's process-wide Go2 channel factory."""
 
+import math
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from typing import Any
 
 _lock = threading.Lock()
 _interface: str | None = None
@@ -57,3 +59,29 @@ def go2_dds_session(interface: str) -> Iterator[None]:
     finally:
         with _lock:
             _active = False
+
+
+def sport_velocity(state: Any) -> tuple[list[float], float] | None:
+    """Read finite three-axis velocity and yaw speed from SDK2 SportModeState."""
+    try:
+        velocity = [float(v) for v in state.velocity]
+        yaw = float(state.yaw_speed)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+    if len(velocity) != 3 or not all(map(math.isfinite, [*velocity, yaw])):
+        return None
+    return velocity, yaw
+
+
+def subscribe_sport_state(callback: Callable[[Any], None]) -> Any:
+    """Open a SportModeState reader on the active DDS session; caller closes it."""
+    from unitree_sdk2py.core.channel import ChannelSubscriber
+    from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
+
+    subscriber = ChannelSubscriber("rt/sportmodestate", SportModeState_)
+    try:
+        subscriber.Init(callback, 10)
+    except BaseException:
+        subscriber.Close()
+        raise
+    return subscriber

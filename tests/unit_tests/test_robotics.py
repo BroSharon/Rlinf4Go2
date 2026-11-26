@@ -9711,6 +9711,8 @@ def test_go2_watchdog_stops_during_stalled_move_and_again_after_return(
 
 
 def test_go2_reset_waits_for_inflight_move(go2_sdk, connect_go2, stalled_go2_move):
+    from concurrent.futures import TimeoutError as FutureTimeoutError
+
     base = connect_go2(state_timeout=5.0, command_timeout=5.0)
     entered, release = stalled_go2_move
     resetting = threading.Event()
@@ -9725,7 +9727,7 @@ def test_go2_reset_waits_for_inflight_move(go2_sdk, connect_go2, stalled_go2_mov
             assert entered.wait(1)
             stop = pool.submit(reset)
             assert resetting.wait(1)
-            with pytest.raises(TimeoutError):
+            with pytest.raises(FutureTimeoutError):
                 stop.result(timeout=0.05)
         finally:
             release.set()
@@ -10060,7 +10062,13 @@ def test_go2_sport_manual_failures_preserve_report_and_cleanup(go2_sdk, failure)
 def test_go2_sport_preview_and_cancel_never_open_sdk(
     monkeypatch, go2_sdk, tmp_path, mode
 ):
-    from toolkits.realworld_check.check_go2_sport import main
+    from toolkits.realworld_check import check_go2_sport
+
+    monkeypatch.setattr(
+        check_go2_sport,
+        "Path",
+        lambda value: tmp_path if value == "/proc" else type(tmp_path)(value),
+    )
 
     output = tmp_path / "report.json"
     argv = [
@@ -10077,7 +10085,7 @@ def test_go2_sport_preview_and_cancel_never_open_sdk(
     else:
         monkeypatch.setattr("builtins.input", lambda _: "CANCEL")
     monkeypatch.setattr(sys, "argv", argv)
-    main()
+    check_go2_sport.main()
     assert go2_sdk.events == []
     assert not output.exists()
 
@@ -10100,6 +10108,81 @@ def test_go2_sport_speed_estimates_require_fresh_stationary_window(monkeypatch):
     speeds.callback(SimpleNamespace(velocity=[0.3, 0, 0], yaw_speed=0))
     assert speeds.fresh()
     assert not speeds.stopped(10)
+
+
+def test_go2_feedback_timestamp_precedes_dispatch_during_decode(go2_sdk, connect_go2):
+    base = connect_go2(track_velocity=True, state_timeout=5, command_timeout=5)
+    decoding = threading.Event()
+    release = threading.Event()
+
+    class Sample:
+        yaw_speed = -0.2
+
+        @property
+        def velocity(self):
+            decoding.set()
+            assert release.wait(2)
+            return [0.1, 0.2, 0.3]
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        callback = pool.submit(go2_sdk.sport_callback, Sample())
+        try:
+            assert decoding.wait(1)
+            base.send_action({"velocity": [0.1, 0, 0]})
+        finally:
+            release.set()
+        callback.result(timeout=1)
+    batch = base.drain_tracking()
+    dispatch = next(e for e in batch["events"] if e["type"] == "dispatch")
+    sample = next(e for e in batch["events"] if e["type"] == "feedback")
+    assert sample["time_ns"] < dispatch["time_ns"] < batch["end_ns"]
+    assert dispatch["sdk_return_code"] == 0
+
+
+def test_go2_tracking_interrupted_dispatch(go2_sdk, tmp_path):
+    import json
+
+    from rlinf.envs.real.go2.tracking import Go2TrackingEnv
+    from rlinf.robotics import Go2Config
+
+    config = Go2Config(node_rank=0, interface="fake-go2", enable_motion=True)
+    discovery = RobotDiscovery.registry["UnitreeGo2"].discovery_cls
+    go2_sdk.stream_feedback = True
+    env = Go2TrackingEnv(
+        {
+            "log_dir": str(tmp_path),
+            "command_name": "forward",
+            "max_num_steps": 2,
+            "step_frequency": 1000,
+        },
+        robot_info=discovery.enumerate(0, [config]).infos[0],
+    )
+    try:
+        env.reset()
+        command = np.array([0.1, 0, 0], dtype=np.float32)
+        env.step(command)
+        go2_sdk.move_code = 7
+        with pytest.raises(RuntimeError, match="Move send returned 7"):
+            env.step(command)
+    finally:
+        env.close()
+
+    (path,) = tmp_path.glob("go2_tracking_*.json")
+    report = json.loads(path.read_text())
+    assert report["feedback_source"] == "mock"
+    assert "Move send returned 7" in report["end_reason"]
+    assert report["metrics"]["go2_tracking_dispatched_steps"] == 1
+    assert report["metrics"]["go2_tracking_valid_steps"] == 1
+    assert report["metrics"]["go2_tracking_valid_episode"] == 0
+    assert "go2_tracking_mae_vx_mps" not in report["metrics"]
+    first, failed = report["steps"]
+    assert (
+        first["dispatch"]["time_ns"] <= first["feedback"]["time_ns"] < first["end_ns"]
+    )
+    assert failed["status"] == "not_dispatched"
+    assert failed["dispatch"]["status"] == "failed"
+    assert any(e["type"] == "fault" for e in report["events"])
+    assert go2_sdk.events[-3:] == [("stop",), ("close",), ("sport_close",)]
 
 
 def test_go2_sport_conflicts_only_include_potential_motion_commands(

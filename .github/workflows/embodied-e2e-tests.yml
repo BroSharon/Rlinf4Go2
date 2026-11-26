@@ -145,6 +145,13 @@ jobs:
           source .venv/bin/activate
           bash tests/e2e_tests/evaluations/run.sh go2_drive_dummy_mlp_eval
 
+      - name: Go2 velocity tracking evaluation with mock SDK2
+        timeout-minutes: 20
+        run: |
+          unset PYTHONPATH
+          source .venv/bin/activate
+          python -m pytest -q tests/e2e_tests/evaluations/test_go2_tracking.py
+
       - name: Xsquare-turtle2 SAC dummy test
         timeout-minutes: 20
         run: |

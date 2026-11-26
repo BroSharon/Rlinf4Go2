@@ -47,13 +47,12 @@ class SpeedLog:
 
     def callback(self, state: Any) -> None:
         """Ignore malformed or nonfinite SDK estimates."""
-        try:
-            velocity = [float(v) for v in state.velocity]
-            yaw = float(state.yaw_speed)
-            if len(velocity) != 3 or not all(map(math.isfinite, velocity + [yaw])):
-                return
-        except (AttributeError, TypeError, ValueError, OverflowError):
+        from rlinf.robotics.go2_dds import sport_velocity
+
+        reading = sport_velocity(state)
+        if reading is None:
             return
+        velocity, yaw = reading
         with self.lock:
             self.rows.append(
                 {"t": time.monotonic(), "velocity": velocity, "yaw_speed": yaw}
@@ -131,6 +130,7 @@ def run_check(interface: str, direction: str | None, seconds: int) -> dict[str, 
     import numpy as np
 
     from rlinf.robotics import Go2Config, RobotDiscovery
+    from rlinf.robotics.go2_dds import subscribe_sport_state
 
     steps = seconds * 10
     report = {
@@ -163,11 +163,7 @@ def run_check(interface: str, direction: str | None, seconds: int) -> dict[str, 
             env_cfg={},
         )
         if direction:
-            from unitree_sdk2py.core.channel import ChannelSubscriber
-            from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
-
-            subscriber = ChannelSubscriber("rt/sportmodestate", SportModeState_)
-            subscriber.Init(speeds.callback, 10)
+            subscriber = subscribe_sport_state(speeds.callback)
             deadline = time.monotonic() + 3
             while not speeds.fresh() and time.monotonic() < deadline:
                 time.sleep(0.02)

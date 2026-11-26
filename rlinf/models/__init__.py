@@ -177,6 +177,11 @@ def _register_builtin_models():
 
         return get_model(cfg, torch_dtype)
 
+    def _build_go2_velocity(cfg: DictConfig, torch_dtype):
+        from rlinf.models.embodiment.go2_velocity import Go2VelocityPolicy
+
+        return Go2VelocityPolicy(cfg)
+
     def _build_mlp_policy(cfg: DictConfig, torch_dtype):
         from rlinf.models.embodiment.mlp_policy import get_model
 
@@ -337,6 +342,12 @@ def _register_builtin_models():
     register_model(
         SupportedModel.DEXBOTIC_DM0.value,
         _build_dexbotic_dm0,
+        category="embodied",
+        force=True,
+    )
+    register_model(
+        SupportedModel.GO2_VELOCITY.value,
+        _build_go2_velocity,
         category="embodied",
         force=True,
     )

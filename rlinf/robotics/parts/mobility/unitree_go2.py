@@ -26,11 +26,16 @@ import threading
 import time
 from contextlib import ExitStack
 from functools import cache
+from importlib import metadata
 from typing import Any
 
 import numpy as np
 
-from rlinf.robotics.go2_dds import go2_dds_session
+from rlinf.robotics.go2_dds import (
+    go2_dds_session,
+    sport_velocity,
+    subscribe_sport_state,
+)
 from rlinf.utils.logging import get_logger
 
 from ..base import Action, Features, Observation
@@ -63,6 +68,7 @@ class Go2Base(MobileBase):
     Args:
         interface: Explicit network interface connected to the robot.
         enable_motion: Permit nonzero Move calls after on-site authorization.
+        track_velocity: Record dispatches, stops, and SportModeState feedback.
         command_timeout: Seconds without a new action before requesting stop.
         state_timeout: Maximum local state reception age in seconds.
         rpc_timeout: Timeout for acknowledged SDK calls, in seconds.
@@ -80,6 +86,7 @@ class Go2Base(MobileBase):
         interface: str,
         *,
         enable_motion: bool = False,
+        track_velocity: bool = False,
         command_timeout: float = 0.5,
         state_timeout: float = 0.5,
         rpc_timeout: float = 1.0,
@@ -95,6 +102,10 @@ class Go2Base(MobileBase):
         ):
             if not np.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive, got {value}.")
+        self._events: list[dict[str, Any]] | None = [] if track_velocity else None
+        self._event_lock = threading.Lock()
+        self._capture_feedback = False
+        self._sdk_version = ""
         self.interface = interface
         self.enable_motion = enable_motion
         self.command_timeout = command_timeout
@@ -155,12 +166,71 @@ class Go2Base(MobileBase):
             self._received_at = time.monotonic()
         self._ready.set()
 
+    def _record_event(self, kind: str, **fields: Any) -> dict[str, Any] | None:
+        if self._events is None:
+            return None
+        with self._event_lock:
+            if kind == "feedback" and not self._capture_feedback:
+                return None
+            if kind in ("dispatch", "stop"):
+                self._capture_feedback = kind == "dispatch"
+            event = {"type": kind, "time_ns": time.monotonic_ns(), **fields}
+            # Keep the first stop boundary and summarize watchdog retries even
+            # if the episode owner has stopped polling an unreachable robot.
+            if kind in ("stop", "fault") and self._retry_stop_at is not None:
+                previous = next(
+                    (e for e in reversed(self._events) if e["type"] == kind), None
+                )
+                if previous is not None:
+                    previous["attempts"] = previous.get("attempts", 1) + 1
+                    previous["last_time_ns"] = event["time_ns"]
+                    if kind == "fault":
+                        previous["last_error"] = fields["error"]
+                    return previous
+            self._events.append(event)
+            return event
+
+    def _on_sport_state(self, state: Any) -> None:
+        received_ns = time.monotonic_ns()
+        reading = sport_velocity(state)
+        if reading is not None:
+            velocity, yaw = reading
+            self._record_event(
+                "feedback", time_ns=received_ns, velocity=velocity, yaw_speed=yaw
+            )
+
+    def drain_tracking(self) -> dict[str, Any]:
+        """Take events through this robot-host boundary and start a new interval."""
+        if self._events is None:
+            raise RuntimeError("Go2 velocity tracking must be enabled before capture.")
+        with self._send_lock, self._event_lock:
+            self._capture_feedback = False
+            events, self._events = self._events, []
+            return {
+                "end_ns": time.monotonic_ns(),
+                "source": "mock" if self._sdk_version == "mock" else "sdk2",
+                "sdk_version": self._sdk_version,
+                "events": events,
+            }
+
     def _open(self) -> Any:
         from unitree_sdk2py.core.channel import ChannelSubscriber
         from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_
 
         self._dds.enter_context(go2_dds_session(self.interface))
         try:
+            if self._events is not None:
+                self._events.clear()
+                import unitree_sdk2py
+
+                self._sdk_version = getattr(unitree_sdk2py, "__version__", None)
+                if self._sdk_version is None:
+                    try:
+                        self._sdk_version = metadata.version("unitree_sdk2py")
+                    except metadata.PackageNotFoundError:
+                        self._sdk_version = "unknown"
+                subscriber = subscribe_sport_state(self._on_sport_state)
+                self._dds.callback(subscriber.Close)
             self._ready.clear()
             self._shutdown.clear()
             self._fault = None
@@ -196,10 +266,12 @@ class Go2Base(MobileBase):
     def _stop(self) -> None:
         if self._fault is None and self._motion_expired(time.monotonic()):
             self._fault = "Command or state timed out; reconnect before motion."
+            self._record_event("fault", error=self._fault)
         self._deadline = None
         if self._client is None:
             return
         try:
+            self._record_event("stop", status="requested")
             code = self._client.StopMove()
             if code != 0:
                 raise RuntimeError(f"StopMove returned {code}")
@@ -207,6 +279,7 @@ class Go2Base(MobileBase):
             self._fault = (
                 f"StopMove unconfirmed ({exc}); use the remote emergency stop."
             )
+            self._record_event("fault", error=self._fault)
             self._retry_stop_at = time.monotonic() + 0.2
             raise RuntimeError(self._fault) from exc
         self._retry_stop_at = None
@@ -215,6 +288,7 @@ class Go2Base(MobileBase):
         if self._retry_stop_at is not None and not retry_now:
             return
         self._fault = reason
+        self._record_event("fault", error=reason)
         self._stop()
 
     def _watchdog(self) -> None:
@@ -269,6 +343,7 @@ class Go2Base(MobileBase):
                     "Go2 connection is closing; no actions are permitted."
                 )
             dispatched = False
+            dispatch_event = None
             try:
                 if set(action) != {"velocity"}:
                     raise ValueError("Go2 action must contain only 'velocity'.")
@@ -310,7 +385,14 @@ class Go2Base(MobileBase):
                 if time.monotonic() >= expires:
                     raise TimeoutError("Go2 Move expired before dispatch.")
                 dispatched = True
-                code = move_client.Move(*(float(v) for v in velocity))
+                command = velocity.tolist()
+                if self._events is not None:
+                    dispatch_event = self._record_event(
+                        "dispatch", command=command, status="failed"
+                    )
+                code = move_client.Move(*command)
+                if dispatch_event is not None:
+                    dispatch_event["sdk_return_code"] = code
                 with self._lock:
                     if self._deadline is None or time.monotonic() >= expires:
                         raise TimeoutError(
@@ -319,8 +401,12 @@ class Go2Base(MobileBase):
                     if code != 0:
                         raise RuntimeError(f"Move send returned {code}.")
                     self._deadline = command_deadline
+                    if dispatch_event is not None:
+                        dispatch_event["status"] = "dispatched"
                 return {"velocity": velocity}
-            except BaseException:
+            except BaseException as exc:
+                if dispatch_event is not None:
+                    dispatch_event["error"] = repr(exc)
                 # A prior watchdog stop may have preceded a stalled SDK write.
                 with self._lock:
                     self._trip(

@@ -20,6 +20,7 @@ import dataclasses
 import importlib
 import importlib.util
 import io
+import json
 import os
 import pickle
 import re
@@ -1414,6 +1415,7 @@ _ROBOTS = ("franka", "dosw1", "gim_arm", "go2", "xsquare")
 
 EXPECTED_IDS = {
     "Go2DriveEnv-v1",
+    "Go2TrackingEnv-v1",
     "FrankaEnv-v1",
     "PegInsertionEnv-v1",
     "FrankaBinRelocationEnv-v1",
@@ -1437,6 +1439,188 @@ def test_every_robot_folder_has_a_base():
     missing = [name for name in _ROBOTS if not (_REAL / name / "base.py").exists()]
 
     assert missing == []
+
+
+@pytest.mark.parametrize("boundary", ["end", "stop", "dispatch"])
+def test_go2_tracking_pairs_last_finite_sample_in_window(boundary):
+    from rlinf.envs.real.go2.tracking import pair_step
+
+    command = {
+        "type": "dispatch",
+        "time_ns": 10,
+        "command": [-0.1, 0.2, -0.3],
+        "status": "dispatched",
+    }
+
+    def feedback(t, yaw=-0.3):
+        return {
+            "type": "feedback",
+            "time_ns": t,
+            "velocity": [-0.1, 0.2, 0.0],
+            "yaw_speed": yaw,
+        }
+
+    events = [
+        feedback(9),
+        command,
+        feedback(10),
+        feedback(16),
+        feedback(19, np.nan),
+        feedback(20),
+    ]
+    end = 20
+    if boundary != "end":
+        events.append({**command, "type": boundary, "time_ns": 20})
+        end = 25
+    row = pair_step(events, end)
+    assert row["end_ns"] == 20
+    assert row["feedback"] == feedback(16)
+    assert pair_step([command, feedback(10)], 11)["feedback"] == feedback(10)
+    assert pair_step([feedback(9), command, feedback(11)], 11)["status"] == "missing"
+
+
+@pytest.mark.parametrize("bias", [[0, 0, 0], [0.05, 0, 0], [0.05, -0.025, 0.125]])
+def test_go2_tracking_episode_errors_and_missing_feedback(bias):
+    from rlinf.envs.real.go2.tracking import episode_metrics, pair_step
+
+    command = [-0.2, 0.1, -0.4]
+    rows = []
+    for i in range(10):
+        dispatch = {
+            "type": "dispatch",
+            "time_ns": i,
+            "command": command,
+            "status": "dispatched",
+        }
+        events = [dispatch]
+        if i < 8:
+            vx, vy, yaw = np.add(command, bias)
+            events.append(
+                {
+                    "type": "feedback",
+                    "time_ns": i,
+                    "velocity": [vx, vy, 9.0],
+                    "yaw_speed": yaw,
+                }
+            )
+        rows.append(pair_step(events, i + 1))
+    metrics = episode_metrics(rows, complete=True, mapping_confirmed=True)
+    assert metrics["go2_tracking_dispatched_steps"] == 10
+    assert metrics["go2_tracking_valid_steps"] == 8
+    assert metrics["go2_tracking_feedback_coverage"] == pytest.approx(0.8)
+    assert metrics["go2_tracking_valid_episode"] == 1
+    for axis, error in zip(("vx_mps", "vy_mps", "yaw_rate_radps"), bias):
+        assert metrics[f"go2_tracking_mae_{axis}"] == pytest.approx(abs(error))
+
+    for complete, confirmed in [(True, False), (False, True)]:
+        invalid = episode_metrics(rows, complete=complete, mapping_confirmed=confirmed)
+        assert invalid["go2_tracking_valid_episode"] == 0
+        assert not any("mae" in key for key in invalid)
+    missing = episode_metrics(rows[-2:], complete=True, mapping_confirmed=True)
+    assert missing == {
+        "go2_tracking_dispatched_steps": 2,
+        "go2_tracking_valid_steps": 0,
+        "go2_tracking_feedback_coverage": 0,
+        "go2_tracking_valid_episode": 0,
+    }
+    failed = pair_step([{**dispatch, "status": "failed"}], 20)
+    assert episode_metrics([failed], complete=False, mapping_confirmed=True) == {
+        "go2_tracking_dispatched_steps": 0,
+        "go2_tracking_valid_steps": 0,
+        "go2_tracking_valid_episode": 0,
+    }
+
+
+@pytest.mark.parametrize("auto_reset", [False, True])
+def test_go2_tracking_returns_batched_metrics_only_at_episode_end(tmp_path, auto_reset):
+    from rlinf.envs.real.env import RealWorldEnv
+
+    cfg = OmegaConf.load(_ROOT / "evaluations/realworld/realworld_go2_tracking.yaml")
+    cfg.runner.logger.log_path = str(tmp_path)
+    cfg = cfg.env.eval
+    cfg.auto_reset = auto_reset
+    cfg.max_episode_steps = cfg.max_steps_per_rollout_epoch = (
+        cfg.override_cfg.max_num_steps
+    ) = 2
+    cfg.override_cfg.step_frequency = 1000
+    env = RealWorldEnv(cfg, 1, 0, 1, worker_info=None)
+    action = np.array([[[-0.1, 0.2, -0.3]]], dtype=np.float32)
+    try:
+        env.reset()
+        for episode in range(2):
+            _, _, _, truncated, infos = env.chunk_step(action)
+            assert not truncated.any()
+            assert "go2_tracking_valid_steps" not in infos[-1]["episode"]
+            _, _, _, truncated, infos = env.chunk_step(action)
+            assert truncated.tolist() == [[True]]
+            if auto_reset:
+                assert "episode" not in infos[-1]
+            terminal = infos[-1]["final_info"] if auto_reset else infos[-1]
+            metrics = terminal["episode"]
+            assert metrics["episode_len"].tolist() == [2]
+            assert metrics["go2_tracking_valid_steps"].tolist() == [2]
+            assert metrics["go2_tracking_mae_vy_mps"][
+                truncated.any(dim=1)
+            ].tolist() == [0.0]
+            assert not any(k.startswith("_") for k in metrics)
+            assert len(list(tmp_path.glob("go2_tracking_*.json"))) == episode + 1
+            if not auto_reset:
+                env.reset()
+    finally:
+        env.close()
+    for path in tmp_path.glob("go2_tracking_*.json"):
+        evidence = json.loads(path.read_text())
+        assert evidence["end_reason"] == "max_num_steps"
+        assert evidence["feedback_source"] == "dummy"
+        assert evidence["metrics"]["go2_tracking_valid_episode"] == 1
+        assert len(evidence["steps"]) == 2
+        for step in evidence["steps"]:
+            assert step["dispatch"]["command"] == pytest.approx(action.flatten())
+            assert (
+                step["dispatch"]["time_ns"]
+                <= step["feedback"]["time_ns"]
+                < step["end_ns"]
+            )
+
+
+def test_go2_tracking_isolates_interrupted_episode_on_reset(tmp_path):
+    from rlinf.envs.real.go2 import Go2TrackingEnv
+
+    env = Go2TrackingEnv(
+        {
+            "is_dummy": True,
+            "command_name": "left",
+            "log_dir": str(tmp_path),
+            "step_frequency": 1000,
+            "max_num_steps": 2,
+        }
+    )
+    action = np.array([0, 0.1, 0], dtype=np.float32)
+    try:
+        env.reset()
+        env.step(action)
+        with pytest.raises(ValueError, match="Go2 action"):
+            env.step(np.array([0, np.nan, 0], dtype=np.float32))
+        (path,) = tmp_path.glob("go2_tracking_*.json")
+        interrupted = json.loads(path.read_text())
+        assert interrupted["end_reason"].startswith("ValueError")
+        assert interrupted["metrics"]["go2_tracking_dispatched_steps"] == 1
+        assert interrupted["metrics"]["go2_tracking_valid_episode"] == 0
+        assert [s["status"] for s in interrupted["steps"]] == [
+            "valid",
+            "not_dispatched",
+        ]
+        assert interrupted["events"][-1]["type"] == "stop"
+
+        env.reset()
+        env.step(action)
+        _, _, _, truncated, info = env.step(action)
+        assert truncated
+        assert info["episode"]["go2_tracking_valid_steps"] == 2
+        assert info["episode"]["go2_tracking_dispatched_steps"] == 2
+        assert info["episode"]["go2_tracking_valid_episode"] == 1
+    finally:
+        env.close()
 
 
 def test_go2_startup_leaves_host_processes_alone(monkeypatch):

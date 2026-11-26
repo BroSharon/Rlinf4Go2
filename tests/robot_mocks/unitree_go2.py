@@ -14,8 +14,10 @@
 
 """In-memory SDK2 edge fake; no sockets, DDS participants, or robot access."""
 
+import json
 import threading
 from contextlib import contextmanager
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
@@ -39,7 +41,11 @@ def lowstate(tick: int = 1) -> SimpleNamespace:
 class FakeGo2SDK:
     """Publish state on subscription and record every motion/stop call."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, stream_feedback: bool = False, trace_path: str | None = None
+    ) -> None:
+        self.stream_feedback = stream_feedback
+        self.trace_path = Path(trace_path) if trace_path else None
         self.publish_initial = True
         self.stop_code = 0
         self.move_code = 0
@@ -53,6 +59,13 @@ class FakeGo2SDK:
         self.callback: Any = None
         self.sport_callback: Any = None
         self.publish_sport = True
+
+    def record(self, event: tuple[Any, ...]) -> None:
+        """Keep SDK calls available to in-process and distributed assertions."""
+        self.events.append(event)
+        if self.trace_path is not None:
+            with self.trace_path.open("a") as trace:
+                trace.write(json.dumps(event) + "\n")
 
     def publish(self) -> None:
         """Deliver one recent state through the real adapter's SDK callback."""
@@ -87,7 +100,9 @@ class FakeGo2SDK:
         class Subscriber:
             def __init__(self, topic: str, dtype: type) -> None:
                 self.topic = topic
-                fake.events.append(("subscribe", topic))
+                self.shutdown = threading.Event()
+                self.thread = None
+                fake.record(("subscribe", topic))
 
             def Init(self, callback: Any, queue_len: int) -> None:
                 if self.topic == "rt/sportmodestate":
@@ -96,39 +111,61 @@ class FakeGo2SDK:
                 fake.callback = callback
                 if fake.publish_initial:
                     fake.publish()
+                if fake.stream_feedback:
+
+                    def stream_state() -> None:
+                        while not self.shutdown.wait(0.01):
+                            callback(lowstate())
+
+                    self.thread = threading.Thread(target=stream_state, daemon=True)
+                    self.thread.start()
 
             def Close(self) -> None:
                 if self.topic == "rt/sportmodestate":
                     fake.sport_callback = None
-                    fake.events.append(("sport_close",))
+                    fake.record(("sport_close",))
                     return
+                if self.thread is not None:
+                    self.shutdown.set()
+                    self.thread.join()
                 fake.close_entered.set()
                 if not fake.close_release.wait(2):
                     raise TimeoutError("Test did not release subscriber close")
-                fake.events.append(("close",))
+                fake.record(("close",))
 
         class Client:
             def __init__(self) -> None:
                 self.writer = object()
-                fake.events.append(("client",))
+                fake.record(("client",))
 
             def SetTimeout(self, timeout: float) -> None:
                 self.timeout = timeout
 
             def Init(self) -> None:
-                fake.events.append(("init",))
+                fake.record(("init",))
 
             def StopMove(self) -> int:
                 fake.writes.append((self.writer, "stop", self.timeout))
-                fake.events.append(("stop",))
+                fake.record(("stop",))
                 fake.stopped.set()
                 return fake.stop_code
 
             def Move(self, vx: float, vy: float, vyaw: float) -> int:
                 fake.writes.append((self.writer, "move", self.timeout))
-                fake.events.append(("move", vx, vy, vyaw))
+                fake.record(("move", vx, vy, vyaw))
                 if fake.move_error:
                     raise OSError("Simulated DDS send failure")
+                if (
+                    fake.stream_feedback
+                    and fake.publish_sport
+                    and fake.sport_callback is not None
+                    and fake.move_code == 0
+                ):
+                    fake.sport_callback(
+                        SimpleNamespace(
+                            velocity=[vx + 0.05, vy - 0.02, 0.0], yaw_speed=vyaw + 0.03
+                        )
+                    )
                 return fake.move_code
 
         class ChannelFactory:
@@ -138,7 +175,7 @@ class FakeGo2SDK:
             def Init(self, domain, interface, qos=None):
                 cls = type(self)
                 if not cls.__initialized:
-                    fake.events.append(("dds", domain, interface))
+                    fake.record(("dds", domain, interface))
                     cls.__qos = qos
                     cls.__initialized = True
                 return True
@@ -169,4 +206,11 @@ class FakeGo2SDK:
             module = ModuleType(name)
             module.__dict__.update(values)
             modules[name] = module
+            while "." in name:
+                parent_name, child_name = name.rsplit(".", 1)
+                parent = modules.setdefault(parent_name, ModuleType(parent_name))
+                parent.__path__ = []
+                setattr(parent, child_name, module)
+                module, name = parent, parent_name
+        modules["unitree_sdk2py"].__version__ = "mock"
         return modules

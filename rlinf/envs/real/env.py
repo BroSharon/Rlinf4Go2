@@ -221,7 +221,15 @@ class RealWorldEnv(gym.Env):
         intervene_current_step: np.ndarray,
         infos: EnvInfos,
     ) -> EnvInfos:
-        episode_info = {}
+        task_metrics = infos.get("episode", {})
+        if isinstance(task_metrics, np.ndarray):
+            # Gymnasium 0.29 packs the single robot's dictionary in an object array.
+            episode_info = {k: np.asarray([v]) for k, v in task_metrics[0].items()}
+        else:
+            # Gymnasium 1.x adds a presence mask alongside every metric.
+            episode_info = {
+                k: v for k, v in task_metrics.items() if not k.startswith("_")
+            }
         self.returns += step_reward
         self.success_once = self.success_once | success_current_step
         self.intervened_once = self.intervened_once | intervene_current_step
