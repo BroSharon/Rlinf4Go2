@@ -3,8 +3,8 @@
 当前 **PR1** 通过 RLinf 标准入口录制 Go2 原厂手柄示范。使用 `collect_data_go2` 配置即可保存实际下发的机身速度指令，以及前后两帧状态。[采集指南](docs/source-zh/rst_source/examples/embodied/go2.rst)
 
 - [早期手柄数采原型](https://github.com/BroSharon/Rlinf4Go2/tree/feat/go2-handset-recording)
-- [PR2 速度跟踪评估](https://github.com/BroSharon/Rlinf4Go2/tree/feat/go2-velocity-tracking)
-- [仿真到真机策略回放原型](https://github.com/BroSharon/Rlinf4Go2/tree/feat/go2-handset)
+- [PR2 仿真到真机策略回放](https://github.com/BroSharon/Rlinf4Go2/tree/feat/go2-handset)
+- [PR3 速度跟踪评估](https://github.com/BroSharon/Rlinf4Go2/tree/feat/go2-velocity-tracking)
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/RLinf/misc/main/pic/logo_white.svg" alt="RLinf-logo" width="600"/>

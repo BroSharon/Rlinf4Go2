@@ -9,8 +9,8 @@ This project is one of the patches for integrating Unitree Go2 into the Rlinf fr
 This is the current **PR1** for recording Go2 handset demonstrations through the standard RLinf collector. Use `collect_data_go2` to save the body velocity commands sent to the robot and the states before and after them.
 
 - [Early handset recording prototype](https://github.com/BroSharon/Rlinf4Go2/tree/feat/go2-handset-recording)
-- [PR2 velocity tracking evaluation](https://github.com/BroSharon/Rlinf4Go2/tree/feat/go2-velocity-tracking)
-- [Sim-to-real policy replay prototype](https://github.com/BroSharon/Rlinf4Go2/tree/feat/go2-handset)
+- [PR2 sim-to-real policy replay](https://github.com/BroSharon/Rlinf4Go2/tree/feat/go2-handset)
+- [PR3 velocity tracking evaluation](https://github.com/BroSharon/Rlinf4Go2/tree/feat/go2-velocity-tracking)
 
 ## Run Go2 Collection
 
