@@ -44,6 +44,7 @@ class Go2Env(gym.Env):
     stop. Reward is zero; this is a bring-up task, not a training recipe.
     """
 
+    TRACK_VELOCITY = False
     TELEOP: tuple[str, ...] = ()
     TELEOP_DEFAULT = "none"
     ACTION_WRAPPERS = ()
@@ -91,6 +92,7 @@ class Go2Env(gym.Env):
                 node_rank = None
             self.robot = Go2Robot.build(
                 interface=self.hardware.interface,
+                track_velocity=self.TRACK_VELOCITY,
                 node_rank=node_rank,
                 worker_rank=worker_info.rank if worker_info else 0,
                 env_idx=env_idx,
@@ -141,6 +143,15 @@ class Go2Env(gym.Env):
         self._needs_reset = False
         return observation, {}
 
+    def _drive(self, velocity: np.ndarray) -> dict[str, Any]:
+        started = time.monotonic()
+        if self.robot is not None:
+            self.robot.send_action({"base": {"velocity": velocity}})
+        time.sleep(
+            max(0, 1 / self.config.step_frequency - (time.monotonic() - started))
+        )
+        return self._observation()
+
     def step(
         self, action: np.ndarray
     ) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
@@ -153,13 +164,7 @@ class Go2Env(gym.Env):
                 raise ValueError(
                     "Go2 action must be finite (3,) and within its velocity space."
                 )
-            started = time.monotonic()
-            if self.robot is not None:
-                self.robot.send_action({"base": {"velocity": velocity}})
-            time.sleep(
-                max(0, 1 / self.config.step_frequency - (time.monotonic() - started))
-            )
-            observation = self._observation()
+            observation = self._drive(velocity)
             self._num_steps += 1
             truncated = self._num_steps >= self.config.max_num_steps
             if truncated:

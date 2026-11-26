@@ -20,10 +20,18 @@ if os.environ.get("RLINF_ROBOT_MOCKS"):
     try:
         import sys
 
-        from robot_mocks import sdk_modules
+        if os.environ["RLINF_ROBOT_MOCKS"] == "go2":
+            from unitree_go2 import FakeGo2SDK
 
-        # Replace existing entries because constructing the fakes imports psutil.
-        for name, fake in sdk_modules().items():
-            sys.modules[name] = fake
+            fake = FakeGo2SDK(
+                stream_feedback=True, trace_path=os.environ.get("RLINF_GO2_MOCK_TRACE")
+            )
+            sys.modules.update(fake.modules())
+        else:
+            from robot_mocks import sdk_modules
+
+            sys.modules.update(sdk_modules())
     except Exception as error:  # pragma: no cover - a worker must still start
+        if os.environ["RLINF_ROBOT_MOCKS"] == "go2":
+            raise SystemExit(f"Go2 mock SDK bootstrap failed: {error!r}") from error
         print(f"[robot_mocks] could not install fake SDKs: {error!r}")

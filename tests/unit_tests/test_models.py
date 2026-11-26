@@ -1014,6 +1014,30 @@ class _DummyFSDPModel(torch.nn.Module):
         self.head._fsdp_wrap_name = "custom_head"
 
 
+@pytest.mark.parametrize(
+    ("direction", "velocity"),
+    [
+        ("forward", [0.2, 0, 0]),
+        ("backward", [-0.2, 0, 0]),
+        ("left", [0, 0.2, 0]),
+        ("right", [0, -0.2, 0]),
+        ("turn_left", [0, 0, 0.2]),
+        ("turn_right", [0, 0, -0.2]),
+    ],
+)
+def test_go2_velocity_policy_repeats_one_body_axis_command(direction, velocity):
+    config = OmegaConf.load(
+        Path(__file__).resolve().parents[2]
+        / "evaluations/realworld/realworld_go2_tracking.yaml"
+    ).rollout.model
+    config.command_name = direction
+    config.command_magnitude = 0.2
+    policy = get_model(config)
+    actions, result = policy.predict_action_batch({"states": torch.zeros(2, 35)})
+    torch.testing.assert_close(actions.cpu(), torch.tensor(velocity).expand(2, 1, 3))
+    assert result == {}
+
+
 def test_custom_model_registration_smoke():
     model_type = f"custom_model_smoke_{int(time.time() * 1000)}"
     received = {"torch_dtype": None}

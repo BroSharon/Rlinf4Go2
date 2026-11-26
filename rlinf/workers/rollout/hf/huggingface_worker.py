@@ -82,7 +82,11 @@ class MultiStepRolloutWorker(Worker):
             if cfg.get("actor", None) is not None
             else None
         )
-        self.device = self.torch_platform.current_device()
+        self.device = (
+            torch.device(self.torch_device_type, self.torch_platform.current_device())
+            if self.torch_platform is not None
+            else torch.device("cpu")
+        )
 
         self.num_pipeline_stages = cfg.rollout.pipeline_stage_num
         self.enable_offload = self.cfg.rollout.get("enable_offload", False)
@@ -229,7 +233,7 @@ class MultiStepRolloutWorker(Worker):
             self.hf_model.load_state_dict(model_dict)
 
         self.prefix_runtime = PrefixRolloutRuntime.build(
-            self.cfg, self.hf_model, device=f"{self.torch_device_type}:{self.device}"
+            self.cfg, self.hf_model, device=self.device
         )
 
         rlt_feature_model_config = OmegaConf.select(
@@ -832,7 +836,8 @@ class MultiStepRolloutWorker(Worker):
 
         if self.gc_after_weight_sync:
             gc.collect()
-            self.torch_platform.empty_cache()
+            if self.torch_platform is not None:
+                self.torch_platform.empty_cache()
 
     @classmethod
     def _infer_policy_input_batch_size(cls, policy_input: PolicyInput) -> int:
@@ -1693,7 +1698,8 @@ class MultiStepRolloutWorker(Worker):
                 self.expert_model.to("cpu")
             if self.rlt_feature_model is not None:
                 self.rlt_feature_model.to("cpu")
-        self.torch_platform.empty_cache()
+        if self.torch_platform is not None:
+            self.torch_platform.empty_cache()
 
     def reload_model(self):
         self.hf_model.to(self.device)

@@ -1487,6 +1487,13 @@ class EnvWorker(Worker):
 
         return {**eval_metrics, **self.eval_assignment.scoped(eval_metrics)}
 
+    def close_eval_envs(self) -> None:
+        """Release the environments owned by this standalone evaluation worker."""
+        for env in self.eval_env_list:
+            close = get_env_attr(env, "close")
+            if callable(close):
+                close()
+
     def finalize_eval_results(
         self, env_results: list[dict | None], step: int | None = None
     ) -> tuple[dict[str, float], str | None] | None:

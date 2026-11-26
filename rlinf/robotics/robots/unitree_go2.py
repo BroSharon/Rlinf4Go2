@@ -35,6 +35,7 @@ class Go2Robot(Robot):
         worker_rank: int = 0,
         env_idx: int = 0,
         enable_motion: bool = False,
+        track_velocity: bool = False,
         command_timeout: float = 0.5,
         state_timeout: float = 0.5,
         rpc_timeout: float = 1.0,
@@ -45,6 +46,7 @@ class Go2Robot(Robot):
             base=base_cls(
                 interface,
                 enable_motion=enable_motion,
+                track_velocity=track_velocity,
                 command_timeout=command_timeout,
                 state_timeout=state_timeout,
                 rpc_timeout=rpc_timeout,

@@ -10,7 +10,7 @@ Gymnasium 环境 ``Go2DriveEnv-v1`` 默认从 ``rt/lowstate`` 读取 Go2 EDU 的
 
    .. grid-item-card:: 模型
 
-      手动速度指令。
+      手动指令或固定速度指令。
 
    .. grid-item-card:: 算法
 
@@ -18,7 +18,7 @@ Gymnasium 环境 ``Go2DriveEnv-v1`` 默认从 ``rt/lowstate`` 读取 Go2 EDU 的
 
    .. grid-item-card:: 任务
 
-      状态接收与六方向检查。
+      状态接收与六方向速度跟踪。
 
    .. grid-item-card:: 硬件
 
@@ -108,7 +108,28 @@ Gymnasium 环境 ``Go2DriveEnv-v1`` 默认从 ``rt/lowstate`` 读取 Go2 EDU 的
 
          停止请求和 SDK 低速估计均不能证明物理停稳。请直接观察机器人，运动未停止就使用遥控器。网络断开或进程故障可能导致软件无法请求停止。
 
+      **3. 评估速度跟踪**
+
+      在仓库根目录运行标准评估命令，默认使用 dummy 环境，以 10 Hz 连续发送十次前进指令。每个回合选择上表中的一个方向。用 ``rollout.model.command_magnitude`` 设置现场批准的幅值，平移用 m/s，转向用 rad/s。
+
+      .. code-block:: bash
+
+         bash evaluations/run_eval.sh realworld realworld_go2_tracking
+         bash evaluations/run_eval.sh realworld realworld_go2_tracking rollout.model.command_name=turn_left
+
+      开发机上可用 mock SDK 验证完整链路。以下测试调用同一评估入口，逐轴核对日志中的误差与预设偏差。
+
+      .. code-block:: bash
+
+         python -m pytest -q tests/e2e_tests/evaluations/test_go2_tracking.py
+
+      真机运行前先完成上面的现场检查。在 Go2 硬件配置中将 ``interface`` 设为机器人网卡，将 ``enable_motion`` 设为 true，再设置 ``env.eval.override_cfg.is_dummy=false`` 启用 SDK。现场独立核实 ``rt/sportmodestate`` 速度的前两个分量分别表示机身前向和左向速度（m/s），偏航角速度以左转为正（rad/s）。把确认依据填入 ``env.eval.override_cfg.mapping_source``。
+
 可视化与结果
 ------------
 
 报告记录接口错误和发出停止请求后 SDK 估计的速度。请另行记录在现场观察到的运动和停稳情况。如果应用需要行进距离、转角或停止距离，请单独测量。
+
+跟踪评估在 ``logs/`` 下同一个带时间戳的目录中保存标准日志和 ``go2_tracking_*.json`` 回合明细。对每次成功下发的指令，取下发时刻起、控制步结束前收到的最后一条有限速度估计。若提前请求停止，配对窗口在停止时刻关闭。覆盖率为配对成功的步数除以成功下发步数。明细记录指令、时间戳、速度估计、反馈来源和回合结束原因。
+
+完整回合中，坐标映射已有确认依据且至少一步配对成功时，``eval/go2_tracking_mae_*`` 给出三个轴各自的平均绝对误差。dummy 反馈逐步复现指令，预期十步均有效，三轴误差均为零。真机指标衡量的是机器人自身估计的速度。

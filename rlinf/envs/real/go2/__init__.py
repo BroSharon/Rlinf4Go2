@@ -18,10 +18,22 @@ from rlinf.envs.real.registry import register_tasks
 
 from .base import Go2Env, Go2EnvConfig
 from .drive import Go2DriveEnv
+from .tracking import Go2TrackingEnv
 
-TASKS = {"Go2DriveEnv-v1": Go2DriveEnv}
-_ENTRY_POINTS = register_tasks(
-    __name__, globals(), TASKS, validate_config=Go2DriveEnv.validate_env_config
-)
+TASKS = {"Go2DriveEnv-v1": Go2DriveEnv, "Go2TrackingEnv-v1": Go2TrackingEnv}
+_ENTRY_POINTS = [
+    entry
+    for task_id, cls in TASKS.items()
+    for entry in register_tasks(
+        __name__, globals(), {task_id: cls}, validate_config=cls.validate_env_config
+    )
+]
 
-__all__ = ["TASKS", "Go2Env", "Go2EnvConfig", "Go2DriveEnv", *_ENTRY_POINTS]
+__all__ = [
+    "TASKS",
+    "Go2Env",
+    "Go2EnvConfig",
+    "Go2DriveEnv",
+    "Go2TrackingEnv",
+    *_ENTRY_POINTS,
+]
